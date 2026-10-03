@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "workspace": {
+    "name": "CASMI竞赛",
+    "createdAt": 1791009593520,
+    "preset": "starter"
+  },
+  "authorizedRoots": [
+    "D:\\CASMI竞赛"
+  ],
+  "reload": null
+}

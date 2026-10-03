@@ -1,0 +1,54 @@
+# === 凭证（绝不提交）===
+.secrets/
+*.token
+kaggle.json
+KGAT_*
+# 兜底：任何名字里带 token/secret/credential/password/apikey 的文件
+*token*
+*secret*
+*credential*
+*password*
+*apikey*
+*api_key*
+*.pem
+*.key
+
+# === 大文件数据（不进 git）===
+data/
+*.parquet
+*.pkl
+*.ckpt
+*.pt
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.mgf
+*.mzML
+*.zip
+
+# === 产物与临时文件 ===
+outputs/
+artifacts/
+.deepworks/
+_work/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+numba_cache/
+
+# === 第三方工具（vendored，按需重装）===
+.opencode/ponytail/
+.opencode/node_modules/
+
+# === 编辑器/系统 ===
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
