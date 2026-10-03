@@ -31,9 +31,9 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from casmi.core import smiles_to_inchikey14            # noqa: E402
-from casmi.matching import (                           # noqa: E402
-    DEFAULT_TOL, MAX_DM, modified_cosine, propagate_analog,
-)
+from casmi.matching import DEFAULT_TOL, MAX_DM          # noqa: E402
+from casmi.matching_fast import bin_spectrum, shifted_cosine  # noqa: E402
+from casmi.folds_fast import build_folds_fast            # noqa: E402
 from casmi.spectra import clean_peaks, load_spectra, group_by_molecule  # noqa: E402
 from casmi.validation import V_A, V_B, V_C, build_folds, evaluate       # noqa: E402
 
@@ -41,6 +41,7 @@ DATA = r"D:\CASMI竞赛\data"
 TRAIN = os.path.join(DATA, "raw", "train.parquet")
 STRUCTS = os.path.join(DATA, "processed", "structures.parquet")
 LIBS = os.path.join(DATA, "processed", "library_spectra.parquet")
+LIB_INDEX_DIR = os.path.join(DATA, "processed", "library_spectra_sorted")
 OUT = os.path.join(DATA, "processed")
 
 # Retrieval windows (ppm) and the analog mass-difference window.
@@ -48,6 +49,9 @@ RETRIEVAL_PPM = 15.0
 RETRIEVAL_PPM_WIDE = 40.0
 ANALOG_DM = 2.0          # +/- Da around the query mass for the analog channel
 ANALOG_DM_MAX = MAX_DM   # hard cap on how far a library compound may sit
+# The fingerprint gate is the expensive part of the analog channel, so it is
+# applied only to the strongest spectral analogues.
+ANALOG_TOP_HITS = 60
 TOP_CANDIDATES = 25
 
 
@@ -109,33 +113,238 @@ class StructureStore:
 
 
 class SpectralIndex:
-    """Library spectra indexed by compound key, plus a neutral-mass array."""
+    """
+    Lazy, query-scoped view of the compound-keyed spectral library.
 
-    def __init__(self, path: str):
+    Loading all 2.37M spectra eagerly costs ~10 GB RSS and ~90 s of startup, yet
+    a single query only ever touches the spectra of a few hundred compounds. So
+    only the small per-key index is held in memory; peak arrays are fetched from
+    the partition files on demand and cached.
+
+    The backing store is sorted by key with a key never spanning two partitions,
+    so `by_keys` reads exactly the partitions it needs.
+    """
+
+    def __init__(self, dir_path: str):
         t0 = time.time()
-        df = pd.read_parquet(path)
-        self.keys = df["key"].to_numpy()
-        self.prec = df["precursor_mz"].to_numpy(dtype=np.float64)
-        self.adduct = df["adduct"].to_numpy()
-        self.is_timstof = df["is_timstof"].to_numpy()
-        self.lib = df["ingest_lib"].to_numpy()
-        # store cleaned peaks as separate object arrays; 2.4M spectra is too many
-        # for per-row Python lists to stay cheap, but numpy object arrays of
-        # float32 arrays are acceptable at ~1.3 GB.
-        self.mz = np.empty(len(df), dtype=object)
-        self.inten = np.empty(len(df), dtype=object)
-        for i, (mzb, ib) in enumerate(zip(df["mz"].to_numpy(), df["intensity"].to_numpy())):
-            self.mz[i] = np.frombuffer(mzb, dtype=np.float32)
-            self.inten[i] = np.frombuffer(ib, dtype=np.float32)
-        # neutral mass per spectrum, derived from its compound's structure mass
-        self.by_key: dict[str, list[int]] = defaultdict(list)
-        for i, k in enumerate(self.keys):
-            self.by_key[k].append(i)
-        print(f"SpectralIndex: {len(df):,} spectra for {len(self.by_key):,} compounds "
-              f"({time.time()-t0:.0f}s)")
+        idx = pd.read_parquet(os.path.join(dir_path, "library_index.parquet"))
+        self.part_of: dict[str, int] = dict(zip(idx["key"], idx["partition"]))
+        self.n_of: dict[str, int] = dict(zip(idx["key"], idx["n_spectra"]))
+        self.n_parts = int(idx["partition"].max()) + 1
+        self.dir = dir_path
+        self._part_cache: dict[int, dict] = {}
+        self._loaded_parts: list[int] = []
+        print(f"SpectralIndex(lazy): {len(self.part_of):,} compounds, "
+              f"{int(idx['n_spectra'].sum()):,} spectra in {self.n_parts} partitions "
+              f"({time.time()-t0:.1f}s)")
 
     def __len__(self):
-        return len(self.keys)
+        return len(self.part_of)
+
+    def _load_part(self, p: int) -> dict:
+        got = self._part_cache.get(p)
+        if got is not None:
+            return got
+        df = pd.read_parquet(os.path.join(self.dir, f"part_{p:04d}.parquet"),
+                             columns=["key", "precursor_mz", "adduct",
+                                      "is_timstof", "mz", "intensity"])
+        by_key: dict[str, list[int]] = defaultdict(list)
+        mz = np.empty(len(df), dtype=object)
+        inten = np.empty(len(df), dtype=object)
+        for i, (mzb, ib) in enumerate(zip(df["mz"].to_numpy(),
+                                          df["intensity"].to_numpy())):
+            mz[i] = np.frombuffer(mzb, dtype=np.float32)
+            inten[i] = np.frombuffer(ib, dtype=np.float32)
+        for i, k in enumerate(df["key"].to_numpy()):
+            by_key[k].append(i)
+        got = {"mz": mz, "inten": inten, "by_key": by_key,
+               "prec": df["precursor_mz"].to_numpy(dtype=np.float64),
+               "adduct": df["adduct"].to_numpy(),
+               "is_timstof": df["is_timstof"].to_numpy(),
+               "keys": df["key"].to_numpy(),
+               "bins": None}
+        self._part_cache[p] = got
+        if p not in self._loaded_parts:
+            self._loaded_parts.append(p)
+        return got
+
+    def _binned(self, p: int) -> dict:
+        """
+        Build (once per partition) the binned sparse representation used by the
+        vectorised direct channel, arranged for fast bin -> spectra lookup.
+
+        Layout: all entries of the partition sorted by bin, with entry_spec the
+        spectrum each entry belongs to and weight_ranges giving, for entry i,
+        the cumulative weight of its spectrum -- that is what lets a batched
+        cosine accumulate into the right spectrum without a Python loop over
+        library spectra.
+        """
+        blk = self._load_part(p)
+        if blk["bins"] is not None:
+            return blk["bins"]
+        all_b, all_w, all_s = [], [], []
+        for si in range(len(blk["mz"])):
+            b, w = bin_spectrum(blk["mz"][si], blk["inten"][si])
+            nrm = float(np.sqrt((w.astype(np.float64) ** 2).sum())) if w.size else 0.0
+            if nrm > 0:
+                w = (w / nrm).astype(np.float32)
+            all_b.append(b)
+            all_w.append(w)
+            all_s.append(np.full(b.size, si, dtype=np.int64))
+        if all_b:
+            bins = np.concatenate(all_b)
+            wts = np.concatenate(all_w)
+            spec = np.concatenate(all_s)
+        else:
+            bins = np.empty(0, dtype=np.int32)
+            wts = np.empty(0, dtype=np.float32)
+            spec = np.empty(0, dtype=np.int64)
+        order = np.argsort(bins, kind="stable")
+        bins_s = bins[order]
+        blk["bins"] = {"bins": bins_s, "w": wts[order], "spec": spec[order]}
+        return blk["bins"]
+
+    def group_binned(self, parts):
+        """
+        Concatenate the binned entries of `parts` into one grouped view, so a
+        single vectorised call can score every library spectrum in the analog
+        window instead of thousands of individual Python matches.
+
+        `spec` is remapped to a contiguous index across the concatenated parts.
+        """
+        parts = sorted(set(parts))
+        if not parts:
+            return None
+        bins_l, w_l, spec_l, key_l = [], [], [], []
+        off = 0
+        for p in parts:
+            blk = self._load_part(p)
+            bb = blk["bins"] if blk["bins"] is not None else self._binned(p)
+            if bb["bins"].size == 0:
+                continue
+            bins_l.append(bb["bins"])
+            w_l.append(bb["w"])
+            spec_l.append(bb["spec"] + off)
+            key_l.append(blk["keys"])
+            off += len(blk["mz"])
+        if not bins_l:
+            return None
+        return {
+            "bins": np.concatenate(bins_l),
+            "w": np.concatenate(w_l),
+            "spec": np.concatenate(spec_l),
+            "keys": np.concatenate(key_l),
+            "n_spec": off,
+        }
+
+    def by_keys(self, keys):
+        """
+        Return (mz_list, intensity_list, key_list, is_timstof_list) for the given
+        structure keys, loading only the partitions those keys live in.
+        """
+        keys = [k for k in keys if k in self.part_of]
+        if not keys:
+            return [], [], [], []
+        parts = sorted({self.part_of[k] for k in keys})
+        for p in parts:
+            self._load_part(p)
+        mzs, ints, ks, ts = [], [], [], []
+        for k in keys:
+            blk = self._part_cache[self.part_of[k]]
+            for i in blk["by_key"].get(k, ()):
+                mzs.append(blk["mz"][i])
+                ints.append(blk["inten"][i])
+                ks.append(k)
+                ts.append(bool(blk["is_timstof"][i]))
+        return mzs, ints, ks, ts
+
+    def direct_cosines(self, q_mz: np.ndarray, q_int: np.ndarray,
+                       keys: list[str]) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Vectorised unshifted cosine of one query spectrum against the library
+        spectra of `keys`, grouped to the best score per key.
+
+        All candidate spectra are binned in one batched numpy pass (a per-spectrum
+        Python loop here dominated the runtime: ~1000 bin_spectrum calls per
+        query). Binned candidate spectra are cached per (partition, key) so
+        repeated molecules do not re-bin.
+        """
+        if not keys:
+            return np.empty(0, dtype=object), np.empty(0, dtype=np.float32)
+        qb, qw = bin_spectrum(q_mz, q_int)
+        if qb.size == 0:
+            return np.empty(0, dtype=object), np.empty(0, dtype=np.float32)
+        qn = float(np.sqrt((qw.astype(np.float64) ** 2).sum()))
+        if qn <= 0:
+            return np.empty(0, dtype=object), np.empty(0, dtype=np.float32)
+        qwn = (qw / qn).astype(np.float32)
+
+        best: dict[str, float] = {}
+        by_part: dict[int, list[str]] = defaultdict(list)
+        for k in keys:
+            p = self.part_of.get(k)
+            if p is not None:
+                by_part[p].append(k)
+
+        for p, ks in by_part.items():
+            blk = self._load_part(p)
+            # gather every member spectrum of these keys, binned in one pass
+            spec_ids, spec_key = [], []
+            for k in ks:
+                for si in blk["by_key"].get(k, ()):
+                    spec_ids.append(si)
+                    spec_key.append(k)
+            if not spec_ids:
+                continue
+            all_b, all_w, all_owner = [], [], []
+            for j, si in enumerate(spec_ids):
+                b, w = bin_spectrum(blk["mz"][si], blk["inten"][si])
+                if b.size == 0:
+                    continue
+                nrm = float(np.sqrt((w.astype(np.float64) ** 2).sum()))
+                if nrm <= 0:
+                    continue
+                all_b.append(b)
+                all_w.append((w / nrm).astype(np.float32))
+                all_owner.append(np.full(b.size, j, dtype=np.int32))
+            if not all_b:
+                continue
+            bins = np.concatenate(all_b)
+            wts = np.concatenate(all_w)
+            owner = np.concatenate(all_owner)
+            order = np.argsort(bins, kind="stable")
+            bins, wts, owner = bins[order], wts[order], owner[order]
+
+            scores = np.zeros(len(spec_ids), dtype=np.float64)
+            lo = np.searchsorted(bins, qb, side="left")
+            hi = np.searchsorted(bins, qb, side="right")
+            for t in range(qb.size):
+                if hi[t] <= lo[t]:
+                    continue
+                ent = slice(lo[t], hi[t])
+                np.add.at(scores, owner[ent], qwn[t] * wts[ent])
+            for j, k in enumerate(spec_key):
+                v = float(scores[j])
+                if v > best.get(k, 0.0):
+                    best[k] = v
+
+        if not best:
+            return np.empty(0, dtype=object), np.empty(0, dtype=np.float32)
+        ks_out = list(best)
+        return (np.asarray(ks_out, dtype=object),
+                np.asarray([best[k] for k in ks_out], dtype=np.float32))
+
+    def release(self, keep_last: int = 3) -> None:
+        """Drop all but the most recently used partitions to bound memory."""
+        if keep_last <= 0:
+            self._part_cache.clear()
+            self._loaded_parts.clear()
+            return
+        keep = set(self._loaded_parts[-keep_last:])
+        for p in list(self._part_cache):
+            if p not in keep:
+                del self._part_cache[p]
+        self._loaded_parts = [p for p in self._loaded_parts if p in keep]
 
 
 # --------------------------------------------------------------------- driver
@@ -187,63 +396,89 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
     if not q_masses:
         return [], {}, {}, {}
 
-    # 2. Restrict the library scan.
-    # Scanning every library spectrum whose compound is within +/-200 Da is far
-    # too slow (tens of thousands of greedy peak matches per molecule). Two much
-    # tighter, well-motivated sets are enough:
-    #   (a) spectra of the candidates themselves  -> the direct channel, and the
-    #       only way a true exact hit can ever be found;
-    #   (b) spectra of compounds within +/-ANALOG_DM of a query mass -> the
-    #       analog channel, i.e. plausible near-mass analogues.
+    # 2. Channels.
+    #   Direct: vectorised unshifted cosine against the candidates' own spectra.
+    #           This is the bulk of the work, so it must not be a Python loop.
+    #   Analog: exact shifted matching, but only against compounds inside the
+    #           analog window -- a much smaller set.
     km = store._key_mass
-    scan_ids: set[int] = set()
-    for k in cand_key_set:
-        scan_ids.update(spec_idx.by_key.get(k, ()))
-    for m in q_masses:
-        for i in store.between(m - ANALOG_DM, m + ANALOG_DM):
-            scan_ids.update(spec_idx.by_key.get(store.keys[i], ()))
-    if not scan_ids:
-        return [], {}, {}, {}
 
-    scan = np.fromiter(sorted(scan_ids), dtype=np.int64)
-
-    # 3. per-library-compound spectral evidence
+    # ---- direct channel (vectorised) ----
     lib_direct: dict[str, float] = {}
-    # shifted matches: library key -> best gated SimMod**fp_scale
-    lib_shift: dict[str, float] = {}
     for s in query_spectra:
-        if not np.isfinite(s.neutral_mass):
-            continue
-        qm = s.neutral_mass
-        for si in scan:
-            k = spec_idx.keys[si]
-            m_lib = km.get(k)
-            if m_lib is None:
-                continue
-            dm = qm - m_lib
-            if abs(dm) > ANALOG_DM_MAX:
-                continue
-            sc, nm, mode = modified_cosine(s.mz, s.intensity,
-                                           spec_idx.mz[si], spec_idx.inten[si],
-                                           dm, tol)
-            if sc <= 0 or nm == 0:
-                continue
-            if mode == "direct":
-                if sc > lib_direct.get(k, 0.0):
-                    lib_direct[k] = sc
-            elif use_analog:
-                gated = sc ** fp_scale
-                if gated > lib_shift.get(k, 0.0):
-                    lib_shift[k] = gated
-            # a shifted match still carries direct evidence at its own mass
-            if sc > lib_direct.get(k, 0.0) and mode == "direct":
-                lib_direct[k] = sc
+        hk, hs = spec_idx.direct_cosines(s.mz, s.intensity, cand_keys)
+        for k, v in zip(hk, hs):
+            if v > lib_direct.get(k, 0.0):
+                lib_direct[k] = float(v)
+
+    # ---- analog channel (vectorised shifted cosine) ----
+    # Only library compounds inside the analog window are considered. The query
+    # mass differs per spectrum, so the shift (and therefore a fresh vectorised
+    # pass) is per spectrum -- still thousands of times cheaper than a Python
+    # loop over pairs.
+    analog_raw: dict[str, float] = {}
+    if use_analog:
+        lib_keys: set[str] = set()
+        for m in q_masses:
+            for i in store.between(m - ANALOG_DM, m + ANALOG_DM):
+                lib_keys.add(store.keys[i])
+        lib_keys -= cand_key_set
+        if lib_keys:
+            parts = {spec_idx.part_of[k] for k in lib_keys if k in spec_idx.part_of}
+            grp = spec_idx.group_binned(parts)
+            if grp is not None and grp["n_spec"] > 0:
+                for s in query_spectra:
+                    qm = s.neutral_mass
+                    if not np.isfinite(qm):
+                        continue
+                    # per-library-compound dm, evaluated in the shifted frame:
+                    # shifting the library by qm - m_lib is the same as shifting
+                    # the query by m_lib - qm, which depends on the compound.
+                    # Group compounds by their (binned) dm to bound the passes.
+                    buckets: dict[float, list] = defaultdict(list)
+                    for k in lib_keys:
+                        m_lib = km.get(k)
+                        if m_lib is None:
+                            continue
+                        dm = qm - m_lib
+                        if abs(dm) > ANALOG_DM_MAX:
+                            continue
+                        buckets[round(dm, 3)].append(k)
+                    for dm_val, ks in buckets.items():
+                        if abs(dm_val) < 1e-3:
+                            continue      # unshifted evidence is handled as direct
+                        scores = shifted_cosine(s.mz, s.intensity, float(dm_val),
+                                                grp["bins"], grp["w"], grp["spec"],
+                                                grp["n_spec"])
+                        if scores.size == 0 or not np.any(scores > 0):
+                            continue
+                        kset = set(ks)
+                        # best score per key, restricted to the compounds in
+                        # this dm bucket (their spectra are the only valid ones)
+                        hit_spec = np.flatnonzero(scores > 0)
+                        if hit_spec.size == 0:
+                            continue
+                        for si in hit_spec:
+                            k = grp["keys"][si]
+                            if k not in kset:
+                                continue
+                            v = float(scores[si])
+                            if v > analog_raw.get(k, 0.0):
+                                analog_raw[k] = v
 
     # direct evidence lands on the compound's own candidate entry
     for k, v in lib_direct.items():
         p = key_pos.get(k)
         if p is not None and v > direct[p]:
             direct[p] = v
+
+    # analog evidence is gated by structure similarity, applied only to the
+    # strongest spectral analogues (the fingerprint gate is the expensive part)
+    lib_shift: dict[str, float] = {}
+    if use_analog and analog_raw:
+        top = sorted(analog_raw.items(), key=lambda kv: -kv[1])[:ANALOG_TOP_HITS]
+        for k, sc in top:
+            lib_shift[k] = sc ** fp_scale
 
     # 4. propagate shifted evidence to candidates via fingerprint similarity
     analog = np.zeros(len(cand_keys), dtype=np.float64)
@@ -275,28 +510,27 @@ def main():
     ap.add_argument("--fold", default=V_A, choices=[V_A, V_B, V_C, "all"])
     ap.add_argument("--limit", type=int, default=0, help="limit molecules (debug)")
     ap.add_argument("--no-analog", action="store_true")
+    ap.add_argument("--vb-limit", type=int, default=0,
+                    help="0 skips V-B (233k queries; only sample it deliberately)")
+    ap.add_argument("--vc-limit", type=int, default=300)
+    ap.add_argument("--va-limit", type=int, default=None)
     ap.add_argument("--out", default=os.path.join(OUT, "baseline_v1.json"))
     a = ap.parse_args()
 
     print("loading structures...")
     store = StructureStore(STRUCTS)
-    print("loading library spectra...")
-    spec_idx = SpectralIndex(LIBS)
+    print("loading library index (lazy)...")
+    spec_idx = SpectralIndex(LIB_INDEX_DIR)
 
-    print("\nbuilding validation folds from train...")
-    cols = ["molecule_id", "spectrum_id", "ms2_mzs", "ms2_normalized_intensities",
-            "precursor_mz", "adduct", "normalized_smiles", "inchikey14",
-            "ingest_lib", "molecular_formula"]
-    import pyarrow.parquet as pq
-    pf = pq.ParquetFile(TRAIN)
-    frames = []
-    for b in pf.iter_batches(batch_size=200_000, columns=cols):
-        frames.append(b.to_pandas())
-    train = pd.concat(frames, ignore_index=True)
-    print(f"  train frame: {len(train):,} rows")
-    folds = build_folds(train)
+    print("\nbuilding validation folds (lazy: only query spectra are materialised)...")
+    t_fold = time.time()
+    folds = build_folds_fast(TRAIN, va_limit=a.va_limit, vb_limit=a.vb_limit,
+                             vc_limit=a.vc_limit)
+    print(f"  folds built in {time.time()-t_fold:.0f}s")
     for name, f in folds.items():
-        print(f"  {name}: {len(f)} queries, library {len(f.library):,}")
+        nsp = sum(len(m.spectra) for m in f.queries.values())
+        print(f"  {name}: {len(f)} queries, {nsp:,} query spectra, "
+              f"library {len(f.library):,}")
 
     results = {}
     names = list(folds) if a.fold == "all" else [a.fold]
@@ -318,6 +552,9 @@ def main():
             if n % 10 == 0 or n == len(mids):
                 el = time.time() - t0
                 print(f"  {n}/{len(mids)}  {el:.0f}s  ({el/max(n,1):.2f}s/mol)", flush=True)
+            # bound memory: only the most recently used partitions stay cached
+            if n % 25 == 0:
+                spec_idx.release(keep_last=3)
         truths = {m: fold.truths[m] for m in mids if m in fold.truths}
         res = evaluate(name, preds, truths, cand_keys_map, verbose=True)
         res["n_scored"] = len(mids)
