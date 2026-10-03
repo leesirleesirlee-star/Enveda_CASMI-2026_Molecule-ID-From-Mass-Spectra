@@ -602,6 +602,9 @@ def main():
     ap.add_argument("--user", default="casmi-user")
     ap.add_argument("--slug", default="casmi26-retrieval-analog")
     ap.add_argument("--assets-dataset", default="casmi-user/casmi26-assets")
+    ap.add_argument("--title", default=None,
+                    help="kernel title; must slugify to the requested slug, "
+                         "otherwise Kaggle returns 409 Conflict on push")
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
@@ -630,7 +633,9 @@ def main():
 
     meta = {
         "id": f"{a.user}/{a.slug}",
-        "title": "CASMI26 retrieval + analog",
+        # Kaggle derives the kernel slug from the title; if the two disagree the
+        # push fails with 409 Conflict. Default the title to the slug itself.
+        "title": a.title or a.slug,
         "code_file": "notebook.ipynb",
         "language": "python",
         "kernel_type": "notebook",
