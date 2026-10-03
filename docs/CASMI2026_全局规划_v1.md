@@ -195,6 +195,28 @@ PRD 第 3 章把 DreaMS（1024 维嵌入）+ SimMS（GPU 相似度）当作核�
 
 ---
 
+## 8. 决策记录（2026-10-03 已确认）
+
+| # | 决策项 | 你的选择 | 执行状态 |
+|---|---|---|---|
+| 1 | 验证协议 | **改为三段式**（V-A/V-B/V-C），废弃 PRD 的纯骨架不相交 | 待实现 |
+| 2 | 主引擎 | **检索 + 四通道线性融合**为主线；DreaMS/SimMS 降级为后期可选 | 已按此规划 |
+| 3 | 数据来源 | 走**官方 Kaggle API**（已提供 KGAT token） | ✅ 已打通，下载中 |
+| 4 | Ponytail | **安装**（OpenCode plugin + DSH skill） | ✅ 已完成 |
+| 5 | GPU 功耗 | **暂不解锁**，等成为瓶颈再说 | 已记录 |
+
+### 执行中已发现并处置的事故
+
+- **⚠️ Kaggle token 险些进版本库**：`Kaggle_Token.txt`（37 字节，含真实 `KGAT_` token）在根目录被 `git add` 暂存。
+  已处置：从索引移除 → 归档到 `.secrets/kaggle/` → 删除根目录副本 → 扩展 `.gitignore` 兜底规则 → 全库扫描确认无残留。
+  **建议：比赛结束后到 Kaggle 设置吊销该 token**（它已在对话中明文出现过）。
+- **本机 shell 曾完全不可用**：`D:\CASMI竞赛` 的 Windows 权限缺少当前用户的 WRITE_OWNER，导致所有命令报
+  `SetNamedSecurityInfoW failed`。已修复（备份与回滚脚本在 `D:\CASMI竞赛-acl-recovery\`）。
+- **沙箱会屏蔽 GPU 与部分写操作**：`torch.cuda.is_available()` 在受限模式下为 `False`、pip 解包会失败。
+  凡涉及 GPU 或向 `.opencode/` 写入的命令，需提权运行。
+
+---
+
 ## 附录：本次核查中我实际执行的动作
 
 - 修复了 `D:\CASMI竞赛` 的 Windows 文件权限（原权限缺失导致所有 shell 命令失败），备份与回滚脚本在 `D:\CASMI竞赛-acl-recovery\`
