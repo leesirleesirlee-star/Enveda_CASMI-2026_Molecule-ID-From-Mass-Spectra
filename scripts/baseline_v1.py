@@ -353,7 +353,8 @@ class SpectralIndex:
 
 def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex,
                    use_analog: bool = True, tol: float = DEFAULT_TOL,
-                   analog_weight: float = 1.5, fp_scale: float = 2.0):
+                   analog_weight: float = 1.5, fp_scale: float = 2.0,
+                   exclude_keys: set[str] | None = None):
     """
     Rank candidate structures for one molecule.
 
@@ -374,17 +375,28 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
     Returns (ranked, direct_by_key, analog_by_key, cand).
     """
     # 1. candidate union: tight ppm window, wide ppm window, and analog window
+    #    `exclude_keys` implements the strict folds: for V-C / V-A-hard the true
+    #    structure must NOT be reachable as a candidate, otherwise the fold is
+    #    not measuring what it claims to. Without this the earlier "answers
+    #    removed" results were meaningless.
     cand: dict[str, int] = {}
+    skip = exclude_keys or ()
     for s in query_spectra:
         m = s.neutral_mass
         if not np.isfinite(m):
             continue
         for ppm in (RETRIEVAL_PPM, RETRIEVAL_PPM_WIDE):
             for i in store.window(m, ppm):
-                cand.setdefault(store.keys[i], int(i))
+                k = store.keys[i]
+                if k in skip:
+                    continue
+                cand.setdefault(k, int(i))
         if use_analog:
             for i in store.between(m - ANALOG_DM, m + ANALOG_DM):
-                cand.setdefault(store.keys[i], int(i))
+                k = store.keys[i]
+                if k in skip:
+                    continue
+                cand.setdefault(k, int(i))
     if not cand:
         return [], {}, {}, {}
 
@@ -520,19 +532,24 @@ def load_assets(verbose: bool = True):
 
 def predict_molecules(molecules, store: StructureStore, spec_idx: SpectralIndex,
                       use_analog: bool = True, top_k: int = TOP_CANDIDATES,
-                      progress_every: int = 0, release_every: int = 25):
+                      progress_every: int = 0, release_every: int = 25,
+                      exclude_keys: set[str] | None = None):
     """
     Rank candidates for each molecule. Shared by the evaluation folds and the
     real test submission so both paths exercise identical scoring code.
 
-    Returns (predictions, candidate_keys, per_molecule_timing).
+    `exclude_keys` carries the strict-fold exclusions (keys absent from the
+    fold's library must not be retrievable).
+
+    Returns (predictions, candidate_keys, seconds).
     """
     preds: dict[str, list[str]] = {}
     cand_keys_map: dict[str, list[str]] = {}
     t0 = time.time()
     for n, (mid, mol) in enumerate(molecules.items(), 1):
         ranked, direct, analog, cand = score_molecule(
-            mol.spectra, store, spec_idx, use_analog=use_analog)
+            mol.spectra, store, spec_idx, use_analog=use_analog,
+            exclude_keys=exclude_keys)
         preds[mid] = [store.smiles[cand[k]] for k, *_ in ranked[:top_k]]
         cand_keys_map[mid] = [k for k, *_ in ranked]
         if progress_every and (n % progress_every == 0 or n == len(molecules)):
@@ -606,7 +623,7 @@ def run_test_submission(a, use_analog: bool = True) -> None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fold", default=V_A, choices=[V_A, V_B, V_C, "all"])
+    ap.add_argument("--fold", default=V_A, choices=[V_A, "V_A_hard", V_B, V_C, "all"])
     ap.add_argument("--limit", type=int, default=0, help="limit molecules (debug)")
     ap.add_argument("--no-analog", action="store_true")
     ap.add_argument("--vb-limit", type=int, default=0,
@@ -647,20 +664,21 @@ def main():
             mids = mids[:a.limit]
         print(f"\n=== {name}: scoring {len(mids)} molecules "
               f"(analog={'off' if a.no_analog else 'on'}) ===")
+        # Strict folds expose a reduced library; anything not in it must be
+        # unreachable. Derive the exclusion set from the store's key universe.
+        all_keys = set(store.keys.tolist())
+        exclude = all_keys - set(fold.library)
+        if exclude:
+            print(f"  excluding {len(exclude):,} structures absent from this "
+                  f"fold's library")
         preds, cand_keys_map = {}, {}
         t0 = time.time()
-        for n, mid in enumerate(mids, 1):
-            mol = fold.queries[mid]
-            ranked, direct, analog, cand = score_molecule(
-                mol.spectra, store, spec_idx, use_analog=not a.no_analog)
-            preds[mid] = [store.smiles[cand[k]] for k, *_ in ranked[:TOP_CANDIDATES]]
-            cand_keys_map[mid] = [k for k, *_ in ranked]
-            if n % 10 == 0 or n == len(mids):
-                el = time.time() - t0
-                print(f"  {n}/{len(mids)}  {el:.0f}s  ({el/max(n,1):.2f}s/mol)", flush=True)
-            # bound memory: only the most recently used partitions stay cached
-            if n % 25 == 0:
-                spec_idx.release(keep_last=3)
+        p, ck, el = predict_molecules(
+            {m: fold.queries[m] for m in mids}, store, spec_idx,
+            use_analog=not a.no_analog, progress_every=10,
+            exclude_keys=exclude or None)
+        preds.update(p)
+        cand_keys_map.update(ck)
         truths = {m: fold.truths[m] for m in mids if m in fold.truths}
         res = evaluate(name, preds, truths, cand_keys_map, verbose=True)
         res["n_scored"] = len(mids)

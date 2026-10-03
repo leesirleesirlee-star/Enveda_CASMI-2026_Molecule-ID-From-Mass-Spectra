@@ -162,10 +162,11 @@ def build_folds_fast(path: str, vc_fraction: float = 0.15, seed: int = 42,
     # the true answer is NOT an exact library hit, so only analog propagation
     # and the other evidence channels can surface it.
     if queries_a:
-        remove_a = set(queries_a)
+        lib_hard = _make_lib(key_to_smiles, set(queries_a))
+        leaked = set(truth_a) & set(lib_hard)
+        assert not leaked, f"V_A_hard library leaks {len(leaked)} answers"
         folds["V_A_hard"] = Fold(
-            "V_A_hard", dict(queries_a), dict(truth_a),
-            _make_lib(key_to_smiles, remove_a),
+            "V_A_hard", dict(queries_a), dict(truth_a), lib_hard,
             "instrument-matched queries with their OWN structure removed from the "
             "library -> exact hits impossible, analog/evidence channels required")
 
@@ -196,6 +197,14 @@ def build_folds_fast(path: str, vc_fraction: float = 0.15, seed: int = 42,
             continue
         remove = {smiles_to_inchikey14(t) for t in truth.values()} if remove_truth else set()
         remove.discard(None)
-        folds[name] = Fold(name, mols, truth, _make_lib(key_to_smiles, remove), desc)
+        lib = _make_lib(key_to_smiles, remove)
+        # Invariant: a "answers removed" fold must actually be missing its
+        # answers. Assert it here, because a scorer that bypasses `fold.library`
+        # silently turns the whole protocol into a no-op (this really happened:
+        # V-C and V_A-hard both reported ~1.0 while claiming answers were gone).
+        if remove_truth:
+            leaked = set(truth) & set(lib)
+            assert not leaked, f"{name} library leaks {len(leaked)} answers"
+        folds[name] = Fold(name, mols, truth, lib, desc)
 
     return folds
