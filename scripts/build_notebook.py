@@ -61,11 +61,57 @@ TEST_PATH = os.path.join(COMP_DIR, "test.parquet")
 SAMPLE_SUB = os.path.join(COMP_DIR, "sample_submission.csv")
 
 # Assets we produced offline (see docs/外部资源清单.md). Kaggle mounts an attached
-# dataset at /kaggle/input/<dataset-slug>, so this must match the dataset slug
-# actually attached in kernel-metadata.json.
-ASSET_DIR = os.environ.get("CASMI_ASSETS", "/kaggle/input/casmi26-assets-compact")
+# dataset under /kaggle/input/<slug>, but the exact mount name is not always the
+# slug we expect, so resolve it by searching for the structures file rather than
+# trusting a hardcoded path (a wrong path here fails the whole submission run).
+def _resolve_asset_dir():
+    """
+    Locate the attached asset dataset.
+
+    Kaggle's mount layout is not the obvious /kaggle/input/<slug>: observed in a
+    real run it is /kaggle/input/datasets/<owner>/<slug>/. Rather than hardcode a
+    guess, check the plausible roots and then fall back to a glob search, so a
+    layout change surfaces as a clear message instead of a FileNotFoundError.
+    """
+    import glob as _glob
+    cands = []
+    env = os.environ.get("CASMI_ASSETS")
+    if env:
+        cands.append(env)
+    cands += [
+        "/kaggle/input/datasets/nicholasnicklee/casmi26-assets-compact",
+        "/kaggle/input/casmi26-assets-compact",
+        "/kaggle/input/casmi26-assets",
+    ]
+    for c in cands:
+        if os.path.exists(os.path.join(c, "structures.parquet")):
+            return c
+    for pat in ("/kaggle/input/*/structures.parquet",
+                "/kaggle/input/*/*/structures.parquet",
+                "/kaggle/input/*/*/*/structures.parquet"):
+        hits = _glob.glob(pat)
+        if hits:
+            return os.path.dirname(hits[0])
+    return cands[0]
+
+
+ASSET_DIR = _resolve_asset_dir()
 STRUCTS = os.path.join(ASSET_DIR, "structures.parquet")
 LIB_DIR = os.path.join(ASSET_DIR, "library_spectra_sorted")
+
+# Fail loudly and informatively if the assets are not where we think: printing
+# the actual mount tree turns a bare FileNotFoundError into an actionable diff.
+if not os.path.exists(STRUCTS):
+    import glob as _g
+    print("ASSET DIR LOOKUP FAILED. ASSET_DIR =", ASSET_DIR)
+    print("  os.listdir('/kaggle/input') =", end=" ")
+    try:
+        print(os.listdir("/kaggle/input"))
+    except Exception as e:
+        print("unavailable:", e)
+    print("  glob structures.parquet:", _g.glob("/kaggle/input/**/structures.parquet",
+                                               recursive=True)[:10])
+    raise SystemExit(f"structures.parquet not found under {ASSET_DIR}")
 OUT_PATH = "/kaggle/working/submission.csv"
 
 # Scoring parameters (identical to the validated local baseline)

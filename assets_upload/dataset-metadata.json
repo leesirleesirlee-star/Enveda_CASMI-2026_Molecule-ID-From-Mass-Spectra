@@ -1,0 +1,10 @@
+{
+  "title": "CASMI26 compact assets",
+  "id": "nicholasnicklee/casmi26-assets-compact",
+  "licenses": [
+    {
+      "name": "CC0-1.0"
+    }
+  ],
+  "description": "Offline assets for the CASMI 2026 retrieval + analog pipeline. structures.parquet: 275,810 deduplicated structures (key, SMILES, monoisotopic mass, Morgan fingerprint). library_spectra_sorted/: cleaned MS2 peaks partitioned by structure key from the natural-product ingest libraries, excluding the synthetic enveda-180 source."
+}
