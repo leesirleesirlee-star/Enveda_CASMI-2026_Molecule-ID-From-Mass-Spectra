@@ -33,12 +33,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from casmi.core import smiles_to_inchikey14            # noqa: E402
 from casmi.matching import DEFAULT_TOL, MAX_DM          # noqa: E402
 from casmi.matching_fast import bin_spectrum, shifted_cosine  # noqa: E402
+from casmi.spectra import Spectrum, Molecule            # noqa: E402
 from casmi.folds_fast import build_folds_fast            # noqa: E402
 from casmi.spectra import clean_peaks, load_spectra, group_by_molecule  # noqa: E402
 from casmi.validation import V_A, V_B, V_C, build_folds, evaluate       # noqa: E402
 
 DATA = r"D:\CASMI竞赛\data"
 TRAIN = os.path.join(DATA, "raw", "train.parquet")
+TEST = os.path.join(DATA, "raw", "test.parquet")
 STRUCTS = os.path.join(DATA, "processed", "structures.parquet")
 LIBS = os.path.join(DATA, "processed", "library_spectra.parquet")
 LIB_INDEX_DIR = os.path.join(DATA, "processed", "library_spectra_sorted")
@@ -505,6 +507,103 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
             cand)
 
 
+def load_assets(verbose: bool = True):
+    """Load the structure library and the lazy spectral index once."""
+    if verbose:
+        print("loading structures...")
+    store = StructureStore(STRUCTS)
+    if verbose:
+        print("loading library index (lazy)...")
+    spec_idx = SpectralIndex(LIB_INDEX_DIR)
+    return store, spec_idx
+
+
+def predict_molecules(molecules, store: StructureStore, spec_idx: SpectralIndex,
+                      use_analog: bool = True, top_k: int = TOP_CANDIDATES,
+                      progress_every: int = 0, release_every: int = 25):
+    """
+    Rank candidates for each molecule. Shared by the evaluation folds and the
+    real test submission so both paths exercise identical scoring code.
+
+    Returns (predictions, candidate_keys, per_molecule_timing).
+    """
+    preds: dict[str, list[str]] = {}
+    cand_keys_map: dict[str, list[str]] = {}
+    t0 = time.time()
+    for n, (mid, mol) in enumerate(molecules.items(), 1):
+        ranked, direct, analog, cand = score_molecule(
+            mol.spectra, store, spec_idx, use_analog=use_analog)
+        preds[mid] = [store.smiles[cand[k]] for k, *_ in ranked[:top_k]]
+        cand_keys_map[mid] = [k for k, *_ in ranked]
+        if progress_every and (n % progress_every == 0 or n == len(molecules)):
+            el = time.time() - t0
+            print(f"  {n}/{len(molecules)}  {el:.0f}s  ({el/n:.2f}s/mol)", flush=True)
+        if release_every and n % release_every == 0:
+            spec_idx.release(keep_last=3)
+    return preds, cand_keys_map, time.time() - t0
+
+
+def run_test_submission(a, use_analog: bool = True) -> None:
+    """
+    Predict on the real test.parquet and write a Kaggle-format submission.
+
+    Note the visible test.parquet is a placeholder that Kaggle replaces with a
+    hidden test set at scoring time, so the score of this file is not meaningful
+    -- but the run proves the whole path (load -> retrieve -> rank -> format)
+    works on the competition's actual input schema, and validates the CSV.
+    """
+    from casmi.core import format_submission, validate_submission
+    from casmi.folds_fast import load_query_spectra
+
+    t_all = time.time()
+    store, spec_idx = load_assets()
+
+    print(f"\nloading {TEST} ...")
+    df = pd.read_parquet(TEST)
+    print(f"  {len(df)} spectra, {df['molecule_id'].nunique()} molecules")
+    # build query molecules keyed by molecule_id (test has real ids)
+    mols = {}
+    for mid, sub in df.groupby("molecule_id", sort=False):
+        sp = []
+        for _, row in sub.iterrows():
+            mz, inten = clean_peaks(row["ms2_mzs"], row["ms2_normalized_intensities"])
+            if mz.size < 3:
+                continue
+            sp.append(Spectrum(
+                spectrum_id=str(row.get("spectrum_id", "")),
+                molecule_id=str(mid), mz=mz, intensity=inten,
+                precursor_mz=float(row["precursor_mz"]), adduct=str(row["adduct"]),
+                instrument_type=str(row.get("instrument_type", "") or ""),
+                ingest_lib="test", collision_energy=(),
+            ))
+        if sp:
+            mols[str(mid)] = Molecule(str(mid), sp)
+    print(f"  usable query molecules: {len(mols)}")
+
+    print("\nscoring...")
+    preds, cand_keys, elapsed = predict_molecules(
+        mols, store, spec_idx, use_analog=use_analog, progress_every=50)
+    print(f"  scored in {elapsed:.0f}s ({elapsed/max(len(mols),1):.2f}s/mol)")
+
+    os.makedirs(os.path.dirname(a.submission), exist_ok=True)
+    sub = format_submission(preds, list(df["molecule_id"].drop_duplicates()))
+    sub.to_csv(a.submission, index=False)
+    print(f"\nwrote {a.submission}")
+
+    problems = validate_submission(sub, list(df["molecule_id"].drop_duplicates()))
+    counts = sub["smiles"].astype(str).str.split(";").apply(
+        lambda xs: len([x for x in xs if x.strip()]))
+    print(f"  rows: {len(sub)}  candidates/molecule: min={counts.min()} "
+          f"median={int(counts.median())} max={counts.max()}")
+    if problems:
+        print("  VALIDATION PROBLEMS:")
+        for p in problems:
+            print(f"    - {p}")
+    else:
+        print("  submission format VALID")
+    print(f"  total wall time {time.time()-t_all:.0f}s")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", default=V_A, choices=[V_A, V_B, V_C, "all"])
@@ -515,7 +614,14 @@ def main():
     ap.add_argument("--vc-limit", type=int, default=300)
     ap.add_argument("--va-limit", type=int, default=None)
     ap.add_argument("--out", default=os.path.join(OUT, "baseline_v1.json"))
+    ap.add_argument("--test", action="store_true",
+                    help="predict on data/raw/test.parquet and write a submission")
+    ap.add_argument("--submission", default=r"D:\CASMI竞赛\outputs\submission.csv")
     a = ap.parse_args()
+
+    if a.test:
+        run_test_submission(a, use_analog=not a.no_analog)
+        return
 
     print("loading structures...")
     store = StructureStore(STRUCTS)

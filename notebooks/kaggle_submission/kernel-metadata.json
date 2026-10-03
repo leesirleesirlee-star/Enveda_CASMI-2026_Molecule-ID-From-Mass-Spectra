@@ -1,0 +1,18 @@
+{
+  "id": "nicholasnicklee/casmi26-retrieval-analog",
+  "title": "CASMI26 retrieval + analog",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": false,
+  "dataset_sources": [
+    "nicholasnicklee/casmi26-assets"
+  ],
+  "competition_sources": [
+    "enveda-CASMI26-molecule-id-mass-spectra"
+  ],
+  "kernel_sources": [],
+  "model_sources": []
+}
