@@ -122,6 +122,21 @@ def load_query_spectra(path: str, wanted: set[str], batch: int = 200_000,
     return mols
 
 
+def exclusion_set(fold: Fold, store_keys) -> set[str]:
+    """
+    Keys the scorer must treat as unreachable for this fold.
+
+    Prefers the exclusion set recorded at build time, which includes both key
+    forms of every removed answer (the stored inchikey14 and a freshly derived
+    one). Those two disagree for ~1.4% of structures, and removing only one form
+    leaves the answer reachable through the other -- that was a real leak.
+    """
+    pre = getattr(fold, "exclude", None)
+    if pre is not None:
+        return set(pre)
+    return set(store_keys) - set(fold.library)
+
+
 def _make_lib(key_to_smiles: dict[str, str], remove: set[str]) -> dict[str, dict]:
     return {k: {"key": k, "smiles": s, "ingest_libs": {"all"}}
             for k, s in key_to_smiles.items() if k not in remove}
@@ -162,13 +177,22 @@ def build_folds_fast(path: str, vc_fraction: float = 0.15, seed: int = 42,
     # the true answer is NOT an exact library hit, so only analog propagation
     # and the other evidence channels can surface it.
     if queries_a:
-        lib_hard = _make_lib(key_to_smiles, set(queries_a))
-        leaked = set(truth_a) & set(lib_hard)
+        # remove by both key forms, same reasoning as V-C
+        remove_a = set(queries_a)
+        for k in queries_a:
+            alt = smiles_to_inchikey14(key_to_smiles[k])
+            if alt:
+                remove_a.add(alt)
+        lib_hard = _make_lib(key_to_smiles, remove_a)
+        alt_truth = {smiles_to_inchikey14(s) for s in truth_a.values()}
+        alt_truth.discard(None)
+        leaked = (set(truth_a) | alt_truth) & set(lib_hard)
         assert not leaked, f"V_A_hard library leaks {len(leaked)} answers"
         folds["V_A_hard"] = Fold(
             "V_A_hard", dict(queries_a), dict(truth_a), lib_hard,
             "instrument-matched queries with their OWN structure removed from the "
             "library -> exact hits impossible, analog/evidence channels required")
+        folds["V_A_hard"].exclude = remove_a
 
     # ---- V-B / V-C: split remaining structures ----
     remaining = sorted(set(key_to_smiles) - set(va_keys))
@@ -195,16 +219,32 @@ def build_folds_fast(path: str, vc_fraction: float = 0.15, seed: int = 42,
         truth = {k: key_to_smiles[k] for k in mols if k in key_to_smiles}
         if not truth:
             continue
-        remove = {smiles_to_inchikey14(t) for t in truth.values()} if remove_truth else set()
-        remove.discard(None)
-        lib = _make_lib(key_to_smiles, remove)
-        # Invariant: a "answers removed" fold must actually be missing its
-        # answers. Assert it here, because a scorer that bypasses `fold.library`
-        # silently turns the whole protocol into a no-op (this really happened:
-        # V-C and V_A-hard both reported ~1.0 while claiming answers were gone).
+        remove = set()
         if remove_truth:
-            leaked = set(truth) & set(lib)
+            # Remove by BOTH key forms. The stored inchikey14 column and a fresh
+            # smiles_to_inchikey14() sometimes disagree (measured: 288 of the
+            # first 20,000 keys), because our tautomer canonicalisation is not
+            # byte-identical to the organiser's. Removing only the stored key
+            # left 2 V-C answers reachable -- a real leak caught by the assert
+            # below. A key that is unreachable under either form is unreachable.
+            for k in truth:
+                remove.add(k)
+                alt = smiles_to_inchikey14(key_to_smiles[k])
+                if alt:
+                    remove.add(alt)
+        lib = _make_lib(key_to_smiles, remove)
+        # Invariant: an "answers removed" fold must actually be missing its
+        # answers, under either key form. Assert it here, because a scorer that
+        # bypasses `fold.library` silently turns the whole protocol into a no-op
+        # (this really happened: V-C and V_A-hard both reported ~1.0 while
+        # claiming answers were gone).
+        if remove_truth:
+            alt_truth = {smiles_to_inchikey14(s) for s in truth.values()}
+            alt_truth.discard(None)
+            leaked = (set(truth) | alt_truth) & set(lib)
             assert not leaked, f"{name} library leaks {len(leaked)} answers"
         folds[name] = Fold(name, mols, truth, lib, desc)
+        # record the full exclusion set (both key forms) for the scorer
+        folds[name].exclude = (set(key_to_smiles) - set(lib)) | remove
 
     return folds

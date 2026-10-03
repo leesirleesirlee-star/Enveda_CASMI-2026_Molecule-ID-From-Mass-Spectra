@@ -60,9 +60,10 @@ if not os.path.isdir(COMP_DIR):
 TEST_PATH = os.path.join(COMP_DIR, "test.parquet")
 SAMPLE_SUB = os.path.join(COMP_DIR, "sample_submission.csv")
 
-# Assets we produced offline (see docs/外部资源清单.md). Overridden by env var so
-# the notebook can be pointed at any attached dataset.
-ASSET_DIR = os.environ.get("CASMI_ASSETS", "/kaggle/input/casmi26-assets")
+# Assets we produced offline (see docs/外部资源清单.md). Kaggle mounts an attached
+# dataset at /kaggle/input/<dataset-slug>, so this must match the dataset slug
+# actually attached in kernel-metadata.json.
+ASSET_DIR = os.environ.get("CASMI_ASSETS", "/kaggle/input/casmi26-assets-compact")
 STRUCTS = os.path.join(ASSET_DIR, "structures.parquet")
 LIB_DIR = os.path.join(ASSET_DIR, "library_spectra_sorted")
 OUT_PATH = "/kaggle/working/submission.csv"

@@ -34,7 +34,7 @@ from casmi.core import smiles_to_inchikey14            # noqa: E402
 from casmi.matching import DEFAULT_TOL, MAX_DM          # noqa: E402
 from casmi.matching_fast import bin_spectrum, shifted_cosine  # noqa: E402
 from casmi.spectra import Spectrum, Molecule            # noqa: E402
-from casmi.folds_fast import build_folds_fast            # noqa: E402
+from casmi.folds_fast import build_folds_fast, exclusion_set  # noqa: E402
 from casmi.spectra import clean_peaks, load_spectra, group_by_molecule  # noqa: E402
 from casmi.validation import V_A, V_B, V_C, build_folds, evaluate       # noqa: E402
 
@@ -665,9 +665,9 @@ def main():
         print(f"\n=== {name}: scoring {len(mids)} molecules "
               f"(analog={'off' if a.no_analog else 'on'}) ===")
         # Strict folds expose a reduced library; anything not in it must be
-        # unreachable. Derive the exclusion set from the store's key universe.
-        all_keys = set(store.keys.tolist())
-        exclude = all_keys - set(fold.library)
+        # unreachable. The fold records its own exclusion set (covering both key
+        # forms of a removed answer).
+        exclude = exclusion_set(fold, store.keys)
         if exclude:
             print(f"  excluding {len(exclude):,} structures absent from this "
                   f"fold's library")
