@@ -155,27 +155,37 @@ class DirectHit:
     dm: float
 
 
-def direct_match_query(query_mz, query_in, query_prec: float,
+def direct_match_query(query_mz, query_in,
+                       query_neutral_mass: float,
                        lib_mz: Sequence[np.ndarray], lib_in: Sequence[np.ndarray],
-                       lib_mass: Sequence[float],
-                       candidate_mask: np.ndarray | None = None,
+                       lib_neutral_mass: Sequence[float],
+                       indices: Sequence[int] | None = None,
                        dm_max: float = MAX_DM,
                        tol: float = DEFAULT_TOL) -> list[DirectHit]:
     """
-    Score one query spectrum against library spectra, using the modified cosine.
+    Score one query spectrum against library spectra with the modified cosine.
 
-    Only library spectra whose neutral mass is within dm_max contribute to the
-    analog channel; direct (unshifted) matches are useful at any mass, but we
-    restrict to a generous window because a hit far in mass is not informative
-    about the candidate structures we are ranking.
+    `query_neutral_mass` is required: the analog channel is defined by the
+    neutral-mass difference dm = M_query - M_library, so a caller that does not
+    supply a real query mass cannot do analog matching at all. Passing dm = 0
+    everywhere silently reduces this to a plain cosine, which is exactly the
+    bug this signature prevents.
+
+    Only library spectra with |dm| <= dm_max are searched, since a hit far in
+    mass says nothing about the candidate structures being ranked.
     """
-    q_mass = np.nan
+    if not np.isfinite(query_neutral_mass):
+        raise ValueError("query_neutral_mass must be finite for analog matching")
+
     hits: list[DirectHit] = []
-    n = len(lib_mz)
-    for i in range(n):
-        if candidate_mask is not None and not candidate_mask[i]:
+    scan = range(len(lib_mz)) if indices is None else indices
+    for i in scan:
+        m_lib = lib_neutral_mass[i]
+        if not np.isfinite(m_lib):
             continue
-        dm = 0.0  # unknown per-library-spectrum query mass is handled by caller
+        dm = query_neutral_mass - m_lib
+        if abs(dm) > dm_max:
+            continue
         s, nm, mode = modified_cosine(query_mz, query_in, lib_mz[i], lib_in[i],
                                       dm, tol)
         if s <= 0 or nm == 0:
@@ -278,6 +288,63 @@ def _self_check():
     assert propagate_analog(0.1, a, a) < 0.02
     # None fingerprints must not crash
     assert propagate_analog(0.9, None, a) == 0.0
+
+    # --- direct_match_query must actually USE the query neutral mass ---
+    # Regression guard: an earlier version hardcoded dm=0, which silently
+    # disabled the whole analog channel while still returning plausible scores.
+    #
+    # Library: compound A (200 Da) whose fragments are the query's minus the
+    # modification, and compound B (215 Da) which is merely isobaric with the
+    # query but chemically different. The query IS the +15 Da analogue of A, so
+    # the analog channel must rank A first; a dm=0 implementation can only ever
+    # see B and would rank it first instead.
+    q_mz = np.array([115.0, 165.0, 300.0])
+    q_in = np.array([1.0, 0.5, 0.2])
+    a_mz = np.array([100.0, 150.0, 300.0])     # shifts by +15 to match the query
+    a_in = np.array([1.0, 0.5, 0.2])
+    b_mz = np.array([115.0, 250.0, 400.0])     # only one peak overlaps the query
+    b_in = np.array([1.0, 0.5, 0.2])
+    lib_mz = [a_mz, b_mz]
+    lib_in = [a_in, b_in]
+    lib_nm = [200.0, 215.0]                    # A is 15 Da lighter than the query
+
+    hits = direct_match_query(q_mz, q_in, 215.0, lib_mz, lib_in, lib_nm)
+    assert hits, "no hits returned at all"
+    top = hits[0]
+    assert top.lib_index == 0, \
+        f"analog channel did not rank the true analogue first: " \
+        f"{[(h.lib_index, round(h.score,3), h.dm, h.mode) for h in hits]}"
+    assert abs(top.dm - 15.0) < 1e-9, top
+    assert top.mode in ("shift+", "shift-"), top.mode
+    # Not 1.0: A's own peak at 300 stays unmatched, so the analog score is
+    # high but imperfect. What matters is that it beats the isobaric compound.
+    assert top.score > 0.85, top.score
+    # the isobaric-but-different compound must still be found, by a direct match
+    hit_b = [h for h in hits if h.lib_index == 1]
+    assert hit_b and hit_b[0].mode == "direct", hit_b
+    assert abs(hit_b[0].dm) < 1e-9
+
+    # An honest direct comparison: with the analog hypothesis disabled the
+    # analogue is unreachable, which is exactly what the old dm=0 code did.
+    s_no_shift, n_no_shift, _ = modified_cosine(q_mz, q_in, a_mz, a_in, 0.0)
+    assert n_no_shift == 1 and s_no_shift < 0.6, (s_no_shift, n_no_shift)
+
+    # dm_max really excludes distant library spectra
+    far = direct_match_query(q_mz, q_in, 215.0, lib_mz, lib_in, [200.0, 500.0],
+                            dm_max=50.0)
+    assert all(abs(h.dm) <= 50.0 for h in far)
+
+    # indices restrict the scan
+    only_b = direct_match_query(q_mz, q_in, 215.0, lib_mz, lib_in, lib_nm,
+                                indices=[1])
+    assert all(h.lib_index == 1 for h in only_b), only_b
+
+    # a non-finite query mass must raise rather than silently degrade to cosine
+    try:
+        direct_match_query(q_mz, q_in, float("nan"), lib_mz, lib_in, lib_nm)
+        raise AssertionError("non-finite query mass did not raise")
+    except ValueError:
+        pass
 
     print("matching self-checks passed")
 

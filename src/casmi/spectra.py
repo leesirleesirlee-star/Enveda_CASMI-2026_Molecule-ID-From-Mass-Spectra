@@ -44,6 +44,7 @@ class Spectrum:
     adduct: str
     ionization_mode: str = ""
     instrument_type: str = ""
+    ingest_lib: str = ""
     collision_energy: tuple[float, ...] = ()
     neutral_mass: float = float("nan")
     n_peaks_raw: int = 0
@@ -143,20 +144,47 @@ def clean_peaks(mz: Sequence[float], intensity: Sequence[float],
     return mz.astype(np.float32), inten.astype(np.float32)
 
 
-def load_spectra(df, min_peaks: int = MIN_PEAKS, verbose: bool = False) -> list[Spectrum]:
+def load_spectra(df, min_peaks: int = MIN_PEAKS, verbose: bool = False,
+                 molecule_col: str | None = None) -> list[Spectrum]:
     """
     Build Spectrum objects from a competition parquet frame.
+
+    The two official files have disjoint schemas, which is easy to trip over:
+      test.parquet : molecule_id, spectrum_id, ...  (12 cols)
+      train.parquet: no id columns at all; a molecule is identified by its
+                     structure (normalized_smiles / inchikey14)             (18 cols)
+
+    So the grouping key is explicit. When it is None we use `molecule_id` if
+    present, else fall back to `inchikey14`, else `normalized_smiles`. Pass
+    molecule_col explicitly when the caller knows the identity it wants.
 
     Spectra with fewer than min_peaks cleaned peaks carry almost no structural
     information and are dropped (their molecule may still be represented by its
     other spectra).
     """
+    if molecule_col is None:
+        for c in ("molecule_id", "inchikey14", "normalized_smiles"):
+            if c in df.columns:
+                molecule_col = c
+                break
+    if molecule_col is None or molecule_col not in df.columns:
+        raise KeyError(
+            f"no grouping column available; have {list(df.columns)[:12]}...")
+    has_sid = "spectrum_id" in df.columns
+
     out, dropped = [], 0
-    for row in df.itertuples(index=False):
+    for n, row in enumerate(df.itertuples(index=False)):
         mz, inten = clean_peaks(getattr(row, "ms2_mzs"), getattr(row, "ms2_normalized_intensities"))
         if mz.size < min_peaks:
             dropped += 1
             continue
+        mid = getattr(row, molecule_col)
+        if mid is None or (isinstance(mid, float) and np.isnan(mid)):
+            dropped += 1
+            continue
+        sid = getattr(row, "spectrum_id", None) if has_sid else None
+        if sid is None or (isinstance(sid, float) and np.isnan(sid)):
+            sid = f"{mid}_{n}"
         ce = getattr(row, "collision_energy_ev", None)
         try:
             # Arrow list columns arrive as numpy arrays; `x or ()` is ambiguous on
@@ -164,21 +192,34 @@ def load_spectra(df, min_peaks: int = MIN_PEAKS, verbose: bool = False) -> list[
             ce = () if ce is None else tuple(float(x) for x in ce)
         except (TypeError, ValueError):
             ce = ()
+        npr = getattr(row, "num_peaks", None)
+        try:
+            npr = int(npr) if npr is not None and not (
+                isinstance(npr, float) and np.isnan(npr)) else int(mz.size)
+        except (TypeError, ValueError):
+            npr = int(mz.size)
+        bpi = getattr(row, "base_peak_intensity", None)
+        try:
+            bpi = float(bpi) if bpi is not None else float("nan")
+        except (TypeError, ValueError):
+            bpi = float("nan")
         out.append(Spectrum(
-            spectrum_id=str(getattr(row, "spectrum_id")),
-            molecule_id=str(getattr(row, "molecule_id")),
+            spectrum_id=str(sid),
+            molecule_id=str(mid),
             mz=mz,
             intensity=inten,
             precursor_mz=float(getattr(row, "precursor_mz")),
             adduct=str(getattr(row, "adduct")),
             ionization_mode=str(getattr(row, "ionization_mode", "") or ""),
             instrument_type=str(getattr(row, "instrument_type", "") or ""),
+            ingest_lib=str(getattr(row, "ingest_lib", "") or ""),
             collision_energy=ce,
-            n_peaks_raw=int(getattr(row, "num_peaks", mz.size) or mz.size),
-            base_peak_intensity=float(getattr(row, "base_peak_intensity", np.nan) or np.nan),
+            n_peaks_raw=npr,
+            base_peak_intensity=bpi,
         ))
     if verbose:
-        print(f"  load_spectra: kept {len(out):,}, dropped {dropped:,} (too few peaks)")
+        print(f"  load_spectra: kept {len(out):,}, dropped {dropped:,} "
+              f"(too few peaks / missing id), grouped by {molecule_col}")
     return out
 
 

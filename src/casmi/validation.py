@@ -83,97 +83,101 @@ class ValidationData:
     key_to_smiles: dict[str, str] = field(default_factory=dict)
 
 
-def build_folds(df, vc_fraction: float = 0.15, seed: int = 42) -> dict[str, Fold]:
+def build_folds(df, vc_fraction: float = 0.15, seed: int = 42,
+                calibration_libs: set[str] | None = None,
+                mol_key: str = "inchikey14") -> dict[str, Fold]:
     """
     Build V-A / V-B / V-C from a labelled train frame.
 
-    df must carry: molecule_id, spectrum_id, ms2_mzs, ms2_normalized_intensities,
-    precursor_mz, adduct, normalized_smiles, inchikey14, ingest_lib.
+    NOTE on identity: train.parquet has NO molecule_id (unlike test.parquet), so
+    a "molecule" here is a structure, identified by mol_key (default inchikey14).
+    All spectra carrying that key are the molecule's replicate spectra. This is
+    exactly the aggregation the competition asks for: one ranked candidate list
+    per molecule, informed by all of its spectra.
+
+    df must carry: ms2_mzs, ms2_normalized_intensities, precursor_mz, adduct,
+    normalized_smiles, inchikey14, ingest_lib.
     """
     from .spectra import load_spectra
 
+    calibration_libs = calibration_libs or CALIBRATION_LIBS
     rng = np.random.default_rng(seed)
     lib_col = "ingest_lib" if "ingest_lib" in df.columns else None
+    if mol_key not in df.columns:
+        raise KeyError(f"train frame lacks {mol_key!r}: {list(df.columns)[:12]}")
 
-    # key -> smiles over the whole frame (the universe of reachable answers)
-    key_to_smiles: dict[str, str] = {}
-    for smi, k in zip(df["normalized_smiles"], df.get("inchikey14")):
+    # normalise the key column: fill gaps from SMILES so nothing is lost.
+    # The temporary name must NOT start with an underscore: itertuples() renames
+    # such columns to positional _1/_2 and they become unreachable by name.
+    keys = []
+    for smi, k in zip(df["normalized_smiles"], df[mol_key]):
         kk = k if isinstance(k, str) and k else smiles_to_inchikey14(smi)
-        if kk:
-            key_to_smiles.setdefault(kk, smi)
+        keys.append(kk)
+    df = df.assign(mkey=keys)
+    df = df[df["mkey"].notna()]
 
-    spectra = load_spectra(df)
+    key_to_smiles: dict[str, str] = {}
+    for k, smi in zip(df["mkey"], df["normalized_smiles"]):
+        key_to_smiles.setdefault(k, smi)
+
+    spectra = load_spectra(df, molecule_col="mkey")
     mols = group_by_molecule(spectra)
-    # molecule_id alone is not enough: the same id could appear in two libs, so
-    # we key queries by (lib, molecule_id) via the first spectrum's row.
+    # structure key -> its ingest library (first wins; used for reporting)
     mol_lib: dict[str, str] = {}
     if lib_col:
-        for row in df.itertuples(index=False):
-            mid = str(getattr(row, "molecule_id"))
-            mol_lib.setdefault(mid, str(getattr(row, "ingest_lib")))
+        for k, lib in zip(df["mkey"], df[lib_col]):
+            mol_lib.setdefault(k, str(lib))
 
     folds: dict[str, Fold] = {}
 
-    # ---- V-A: instrument-matched calibration split ----
-    calib_ids = [m for m, mol in mols.items()
-                 if mol_lib.get(m) in CALIBRATION_LIBS] if lib_col else []
-    if calib_ids:
-        # truth for each calibration molecule: its own structure, looked up from df
-        truth = {}
-        sub = df[df[lib_col].isin(CALIBRATION_LIBS)] if lib_col else df.iloc[:0]
-        mid_to_key = {}
-        for row in sub.itertuples(index=False):
-            mid = str(getattr(row, "molecule_id"))
-            k = getattr(row, "inchikey14") or smiles_to_inchikey14(
-                getattr(row, "normalized_smiles"))
-            if k:
-                mid_to_key.setdefault(mid, k)
-        for m in calib_ids:
-            k = mid_to_key.get(m)
-            if k and k in key_to_smiles:
-                truth[m] = key_to_smiles[k]
-        if truth:
-            folds[V_A] = Fold(
-                V_A,
-                {m: mols[m] for m in truth},
-                truth,
-                {k: {"key": k, "smiles": s, "ingest_libs": {"all"}}
-                 for k, s in key_to_smiles.items()},
-                "instrument-matched natural products (enveda-np-examples); "
-                "primary calibration fold",
-            )
+    def make_lib(remove: set[str]) -> dict[str, dict]:
+        return {k: {"key": k, "smiles": s, "ingest_libs": {"all"}}
+                for k, s in key_to_smiles.items() if k not in remove}
 
-    # ---- V-B / V-C: split the remaining molecules by identity ----
-    remaining = sorted(set(mols) - set(folds[V_A].queries if V_A in folds else []))
+    # ---- V-A: instrument-matched calibration split ----
+    # Select on the ROW's ingest_lib, not on a per-structure "first library".
+    # All 250 enveda-np-examples structures also occur in gnps/riken/mona/
+    # massbank/drug_plus, and for most of them one of those is seen first, so a
+    # setdefault-style pick silently yields an empty fold.
+    calib_keys: set[str] = set()
+    if lib_col:
+        for k, lib in zip(df["mkey"], df[lib_col]):
+            if lib in calibration_libs:
+                calib_keys.add(k)
+    if calib_keys:
+        truth = {k: key_to_smiles[k] for k in calib_keys if k in key_to_smiles}
+        # Queries use ONLY the calibration spectra (test-instrument family),
+        # while the library keeps every other source for those same structures.
+        # That makes V-A a genuine instrument-transfer test -- the exact
+        # situation on the hidden test set, where the molecule is known to other
+        # libraries from other instruments but not necessarily to timsTOF data.
+        queries = {}
+        for k in truth:
+            sp = [s for s in mols[k].spectra if s.ingest_lib in calibration_libs]
+            if sp:
+                queries[k] = Molecule(k, sp)
+        if queries:
+            folds[V_A] = Fold(
+                V_A, queries, truth, make_lib(set()),
+                "instrument-matched natural products (enveda-np-examples, "
+                "timsTOF): queries use only calibration spectra while the "
+                "library keeps all other sources -- an instrument-transfer test")
+
+    # ---- V-B / V-C: split the remaining structures ----
+    used = set(folds[V_A].queries) if V_A in folds else set()
+    remaining = sorted(set(mols) - used)
     if remaining:
         perm = rng.permutation(len(remaining))
         n_c = max(1, int(len(remaining) * vc_fraction))
         vc_ids = [remaining[i] for i in perm[:n_c]]
         vb_ids = [remaining[i] for i in perm[n_c:]]
 
-        # truth lookup by molecule_id
-        mid_to_key: dict[str, str] = {}
-        for row in df.itertuples(index=False):
-            mid = str(getattr(row, "molecule_id"))
-            k = getattr(row, "inchikey14") or smiles_to_inchikey14(
-                getattr(row, "normalized_smiles"))
-            if k:
-                mid_to_key.setdefault(mid, k)
-
         def mk(name, ids, desc, remove_truth):
-            truth, q = {}, {}
-            for m in ids:
-                k = mid_to_key.get(m)
-                if not k or k not in key_to_smiles:
-                    continue
-                truth[m] = key_to_smiles[k]
-                q[m] = mols[m]
-            lib = {}
-            for k, s in key_to_smiles.items():
-                if remove_truth and k in {smiles_to_inchikey14(t) for t in truth.values()}:
-                    continue
-                lib[k] = {"key": k, "smiles": s, "ingest_libs": {"all"}}
-            return Fold(name, q, truth, lib, desc)
+            truth = {k: key_to_smiles[k] for k in ids if k in key_to_smiles}
+            q = {k: mols[k] for k in truth}
+            remove = {smiles_to_inchikey14(t) for t in truth.values()} if remove_truth else set()
+            remove.discard(None)
+            return Fold(name, q, truth, make_lib(remove), desc)
 
         folds[V_B] = mk(V_B, vb_ids,
                         "same-source holdout, answer RETAINED in library "
@@ -181,6 +185,10 @@ def build_folds(df, vc_fraction: float = 0.15, seed: int = 42) -> dict[str, Fold
         folds[V_C] = mk(V_C, vc_ids,
                         "identity-disjoint holdout, answer REMOVED from library "
                         "(strict extrapolation)", remove_truth=True)
+
+    # store the full structure universe for oracle-recall diagnostics
+    for f in folds.values():
+        f.__dict__["all_keys"] = key_to_smiles
     return folds
 
 
