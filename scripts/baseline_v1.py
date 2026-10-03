@@ -354,7 +354,10 @@ class SpectralIndex:
 def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex,
                    use_analog: bool = True, tol: float = DEFAULT_TOL,
                    analog_weight: float = 1.5, fp_scale: float = 2.0,
-                   exclude_keys: set[str] | None = None):
+                   exclude_keys: set[str] | None = None,
+                   analog_dm: float | None = None,
+                   analog_candidate_dm: float | None = None,
+                   analog_top_hits: int | None = None):
     """
     Rank candidate structures for one molecule.
 
@@ -374,6 +377,11 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
 
     Returns (ranked, direct_by_key, analog_by_key, cand).
     """
+    # Resolve tunables so callers can sweep them without editing constants.
+    _adm = ANALOG_DM if analog_dm is None else analog_dm
+    _acdm = ANALOG_DM if analog_candidate_dm is None else analog_candidate_dm
+    _top = ANALOG_TOP_HITS if analog_top_hits is None else analog_top_hits
+
     # 1. candidate union: tight ppm window, wide ppm window, and analog window
     #    `exclude_keys` implements the strict folds: for V-C / V-A-hard the true
     #    structure must NOT be reachable as a candidate, otherwise the fold is
@@ -392,7 +400,7 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
                     continue
                 cand.setdefault(k, int(i))
         if use_analog:
-            for i in store.between(m - ANALOG_DM, m + ANALOG_DM):
+            for i in store.between(m - _acdm, m + _acdm):
                 k = store.keys[i]
                 if k in skip:
                     continue
@@ -434,7 +442,13 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
     if use_analog:
         lib_keys: set[str] = set()
         for m in q_masses:
-            for i in store.between(m - ANALOG_DM, m + ANALOG_DM):
+            # _adm is the analog reach. Measured on V_A-hard: the most
+            # fingerprint-similar available library compound sits within 2 Da for
+            # only 17% of queries, while 63% sit 10-50 Da away (methylation,
+            # oxidation) with median Tanimoto 0.78. A 2 Da scan therefore cannot
+            # reach most true analogues; _acdm governs only which structures enter
+            # the candidate pool, so the reach can be widened independently.
+            for i in store.between(m - _adm, m + _adm):
                 lib_keys.add(store.keys[i])
         lib_keys -= cand_key_set
         if lib_keys:
@@ -490,7 +504,7 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
     # strongest spectral analogues (the fingerprint gate is the expensive part)
     lib_shift: dict[str, float] = {}
     if use_analog and analog_raw:
-        top = sorted(analog_raw.items(), key=lambda kv: -kv[1])[:ANALOG_TOP_HITS]
+        top = sorted(analog_raw.items(), key=lambda kv: -kv[1])[:_top]
         for k, sc in top:
             lib_shift[k] = sc ** fp_scale
 
