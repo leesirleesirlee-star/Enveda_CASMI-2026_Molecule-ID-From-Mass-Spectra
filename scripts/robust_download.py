@@ -149,7 +149,32 @@ def main():
         print(f"\n{failed} chunks failed — rerun this script to resume.", flush=True)
         sys.exit(1)
 
-    # stitch
+    # Stitching must verify that the WHOLE chunk set is present, not just the
+    # chunks this instance downloaded. With --parts > 1 each instance owns a
+    # subset, so a naive stitch produces a silently truncated file. Never write
+    # the output unless every chunk exists at its exact expected size.
+    missing, wrong = [], []
+    for i in range(nchunks):
+        pf = os.path.join(parts_dir, f"{i:05d}.bin")
+        s = i * csz
+        e = min(s + csz, total) - 1
+        exp = e - s + 1
+        if not os.path.exists(pf):
+            missing.append(i)
+        elif os.path.getsize(pf) != exp:
+            wrong.append((i, os.path.getsize(pf), exp))
+
+    if missing or wrong:
+        print(f"\nCANNOT STITCH: {len(missing)} chunks missing, {len(wrong)} wrong size.",
+              flush=True)
+        if missing[:10]:
+            print(f"  missing (first 10): {missing[:10]}", flush=True)
+        if wrong[:5]:
+            print(f"  wrong size (first 5): {wrong[:5]}", flush=True)
+        print("  Re-run the downloader (with the same --chunk-mb) to fetch the rest.",
+              flush=True)
+        sys.exit(2)
+
     print("\nstitching...", flush=True)
     with open(a.out, "wb") as out:
         for i in range(nchunks):
