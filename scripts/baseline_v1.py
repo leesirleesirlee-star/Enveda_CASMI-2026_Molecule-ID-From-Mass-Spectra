@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from casmi.core import smiles_to_inchikey14            # noqa: E402
 from casmi.matching import DEFAULT_TOL, MAX_DM          # noqa: E402
-from casmi.matching_fast import bin_spectrum, shifted_cosine  # noqa: E402
+from casmi.matching_fast import BIN_WIDTH, bin_spectrum, shifted_cosine  # noqa: E402
 from casmi.spectra import Spectrum, Molecule            # noqa: E402
 from casmi.folds_fast import build_folds_fast, exclusion_set  # noqa: E402
 from casmi.spectra import clean_peaks, load_spectra, group_by_molecule  # noqa: E402
@@ -434,65 +434,58 @@ def score_molecule(query_spectra, store: StructureStore, spec_idx: SpectralIndex
                 lib_direct[k] = float(v)
 
     # ---- analog channel (vectorised shifted cosine) ----
-    # Only library compounds inside the analog window are considered. The query
-    # mass differs per spectrum, so the shift (and therefore a fresh vectorised
-    # pass) is per spectrum -- still thousands of times cheaper than a Python
-    # loop over pairs.
+    # Reach is measured, not guessed: on V_A-hard the most fingerprint-similar
+    # available library compound sits within 2 Da for only 17% of queries, while
+    # 63% sit 10-50 Da away (methylation +14, oxidation +16, acetylation +42) with
+    # median Tanimoto 0.78. A 2 Da scan therefore cannot reach most true
+    # analogues. `_acdm` (candidate pool) and `_adm` (spectral scan) are separate
+    # so the reach can be widened without exploding the candidate list.
     analog_raw: dict[str, float] = {}
     if use_analog:
-        lib_keys: set[str] = set()
+        # Collect the partitions that the reach window touches, then compute each
+        # library spectrum's neutral-mass offset ONCE as an array. The previous
+        # version rebuilt a (rounded dm -> compounds) dict per query spectrum and
+        # ran a full shifted_cosine pass per distinct dm; at a 50 Da reach that
+        # means ~10^5 full passes per spectrum, which never finishes.
+        parts: set[int] = set(spec_idx._part_cache)
         for m in q_masses:
-            # _adm is the analog reach. Measured on V_A-hard: the most
-            # fingerprint-similar available library compound sits within 2 Da for
-            # only 17% of queries, while 63% sit 10-50 Da away (methylation,
-            # oxidation) with median Tanimoto 0.78. A 2 Da scan therefore cannot
-            # reach most true analogues; _acdm governs only which structures enter
-            # the candidate pool, so the reach can be widened independently.
             for i in store.between(m - _adm, m + _adm):
-                lib_keys.add(store.keys[i])
-        lib_keys -= cand_key_set
-        if lib_keys:
-            parts = {spec_idx.part_of[k] for k in lib_keys if k in spec_idx.part_of}
-            grp = spec_idx.group_binned(parts)
-            if grp is not None and grp["n_spec"] > 0:
-                for s in query_spectra:
-                    qm = s.neutral_mass
-                    if not np.isfinite(qm):
+                p = spec_idx.part_of.get(store.keys[i])
+                if p is not None:
+                    parts.add(p)
+        grp = spec_idx.group_binned(sorted(parts)) if parts else None
+        if grp is not None and grp["n_spec"] > 0:
+            spec_keys = grp["keys"]
+            spec_mass = np.array([km.get(k, np.nan) for k in spec_keys],
+                                 dtype=np.float64)
+            for s in query_spectra:
+                qm = s.neutral_mass
+                if not np.isfinite(qm):
+                    continue
+                dm_all = qm - spec_mass
+                ok = (np.isfinite(dm_all) & (np.abs(dm_all) <= _adm)
+                      & (np.abs(dm_all) > 1e-3))
+                if not ok.any():
+                    continue
+                idx_ok = np.flatnonzero(ok)
+                # spectra sharing the same shift are served by ONE vectorised pass
+                dm_key = np.rint(dm_all[idx_ok] / BIN_WIDTH).astype(np.int64)
+                uniq, inv = np.unique(dm_key, return_inverse=True)
+                for u_i in range(uniq.size):
+                    members = idx_ok[inv == u_i]
+                    dm_val = float(dm_all[members[0]])
+                    sc = shifted_cosine(s.mz, s.intensity, dm_val,
+                                        grp["bins"], grp["w"], grp["spec"],
+                                        grp["n_spec"])
+                    if sc.size == 0:
                         continue
-                    # per-library-compound dm, evaluated in the shifted frame:
-                    # shifting the library by qm - m_lib is the same as shifting
-                    # the query by m_lib - qm, which depends on the compound.
-                    # Group compounds by their (binned) dm to bound the passes.
-                    buckets: dict[float, list] = defaultdict(list)
-                    for k in lib_keys:
-                        m_lib = km.get(k)
-                        if m_lib is None:
-                            continue
-                        dm = qm - m_lib
-                        if abs(dm) > ANALOG_DM_MAX:
-                            continue
-                        buckets[round(dm, 3)].append(k)
-                    for dm_val, ks in buckets.items():
-                        if abs(dm_val) < 1e-3:
-                            continue      # unshifted evidence is handled as direct
-                        scores = shifted_cosine(s.mz, s.intensity, float(dm_val),
-                                                grp["bins"], grp["w"], grp["spec"],
-                                                grp["n_spec"])
-                        if scores.size == 0 or not np.any(scores > 0):
-                            continue
-                        kset = set(ks)
-                        # best score per key, restricted to the compounds in
-                        # this dm bucket (their spectra are the only valid ones)
-                        hit_spec = np.flatnonzero(scores > 0)
-                        if hit_spec.size == 0:
-                            continue
-                        for si in hit_spec:
-                            k = grp["keys"][si]
-                            if k not in kset:
-                                continue
-                            v = float(scores[si])
-                            if v > analog_raw.get(k, 0.0):
-                                analog_raw[k] = v
+                    vals = sc[members]
+                    for local in np.flatnonzero(vals > 0):
+                        si = int(members[local])
+                        v = float(vals[local])
+                        k = spec_keys[si]
+                        if v > analog_raw.get(k, 0.0):
+                            analog_raw[k] = v
 
     # direct evidence lands on the compound's own candidate entry
     for k, v in lib_direct.items():
