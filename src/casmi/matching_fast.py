@@ -90,27 +90,52 @@ def shifted_cosine(q_mz: np.ndarray, q_int: np.ndarray, dm: float,
     # locate every library entry that a shifted query peak can match
     lo = np.searchsorted(lib_bins, b, side="left")
     hi = np.searchsorted(lib_bins, b, side="right")
-    keep = np.flatnonzero(hi > lo)
-    if keep.size == 0:
+    sizes = hi - lo
+    total = int(sizes.sum())
+    if total == 0:
         return out
-    # gather the matching entries, remembering which query peak each came from
-    parts = [np.arange(lo[t], hi[t]) for t in keep]
-    ent = np.concatenate(parts)
-    ent_t = np.concatenate([np.full(hi[t] - lo[t], t, dtype=np.int64) for t in keep])
-    if ent.size == 0:
+
+    # Accumulate with bincount over a bounded chunk instead of materialising the
+    # full match set. With a 730k-structure pool the old version built a
+    # 34M-element index array plus an argsort of it (262 MB per call, fatal at
+    # 10 processes). bincount gives the same sums in O(total) memory-light work.
+    CHUNK = 4_000_000
+    nz_mask = sizes > 0
+    nz_idx = np.flatnonzero(nz_mask)
+    if total <= CHUNK:
+        # Build both the entry list and its owner list from the SAME mask.
+        # Deriving one from flatnonzero(sizes) and the other from sizes[sizes>0]
+        # is a latent misalignment: they agree only while sizes has no negative
+        # entries, and any such entry would silently pair the wrong query peak.
+        ent = np.concatenate([np.arange(lo[t], hi[t]) for t in nz_idx])
+        ent_t = np.repeat(nz_idx, sizes[nz_mask])
+        spec = lib_spec[ent]
+        np.add.at(out, spec, qw[ent_t] * lib_w[ent])
+        sumsq = np.bincount(spec, weights=(lib_w[ent].astype(np.float64) ** 2),
+                            minlength=n_spec)
+        denom = np.sqrt(sumsq)
+        nz = denom > 0
+        out[nz] /= denom[nz]
+        # A cosine cannot exceed 1. Clamping is a safety rail: if the weights are
+        # not L2-normalised per spectrum (they are in group_binned, but not in an
+        # arbitrary caller), the ratio can drift above 1. Better to saturate than
+        # to feed an impossible score into the ranker.
+        np.clip(out, 0.0, 1.0, out=out)
         return out
-    spec = lib_spec[ent]
-    # numerator: sum over query peaks of qw * library weight
-    np.add.at(out, spec, qw[ent_t] * lib_w[ent])
-    # denominator: L2 norm of the library weights over the matched entries only
-    order_s = np.argsort(spec, kind="stable")
-    spec_s = spec[order_s]
-    w_s = lib_w[ent[order_s]]
-    uniq, start_idx = np.unique(spec_s, return_index=True)
-    sumsq = np.add.reduceat(w_s.astype(np.float64) ** 2, start_idx)
-    denom = np.sqrt(sumsq)
+
+    # large case: walk query peaks, accumulating into per-spectrum arrays
+    num = np.zeros(n_spec, dtype=np.float64)
+    ssq = np.zeros(n_spec, dtype=np.float64)
+    for t in nz_idx:
+        a, bnd = int(lo[t]), int(hi[t])
+        spec = lib_spec[a:bnd]
+        wt = lib_w[a:bnd]
+        num += np.bincount(spec, weights=qw[t] * wt, minlength=n_spec)
+        ssq += np.bincount(spec, weights=wt.astype(np.float64) ** 2, minlength=n_spec)
+    denom = np.sqrt(ssq)
     nz = denom > 0
-    out[uniq[nz]] /= denom[nz]
+    out[nz] = num[nz] / denom[nz]
+    np.clip(out, 0.0, 1.0, out=out)
     return out
 
 

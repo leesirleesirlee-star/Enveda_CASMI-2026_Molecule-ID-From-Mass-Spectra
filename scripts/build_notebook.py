@@ -79,14 +79,24 @@ def _resolve_asset_dir():
     if env:
         cands.append(env)
     cands += [
+        "/kaggle/input/datasets/nicholasnicklee/casmi26-assets-pool",
+        "/kaggle/input/casmi26-assets-pool",
+        "/kaggle/input/datasets/nicholasnicklee/casmi26-pool-only",
+        "/kaggle/input/casmi26-pool-only",
+        "/kaggle/input/datasets/nicholasnicklee/casmi26-assets-np",
+        "/kaggle/input/casmi26-assets-np",
         "/kaggle/input/datasets/nicholasnicklee/casmi26-assets-compact",
         "/kaggle/input/casmi26-assets-compact",
         "/kaggle/input/casmi26-assets",
     ]
+    markers = ("candidate_pool.parquet", "structures.parquet")
     for c in cands:
-        if os.path.exists(os.path.join(c, "structures.parquet")):
+        if any(os.path.exists(os.path.join(c, m)) for m in markers):
             return c
-    for pat in ("/kaggle/input/*/structures.parquet",
+    for pat in ("/kaggle/input/*/candidate_pool.parquet",
+                "/kaggle/input/*/*/candidate_pool.parquet",
+                "/kaggle/input/*/*/*/candidate_pool.parquet",
+                "/kaggle/input/*/structures.parquet",
                 "/kaggle/input/*/*/structures.parquet",
                 "/kaggle/input/*/*/*/structures.parquet"):
         hits = _glob.glob(pat)
@@ -95,9 +105,42 @@ def _resolve_asset_dir():
     return cands[0]
 
 
+def _resolve_lib_dir(pool_dir):
+    """
+    Locate library_spectra_sorted, which may live in a DIFFERENT attached
+    dataset than the candidate pool (pool 108 MB and spectra 143 MB were
+    uploaded separately to avoid re-sending the spectra).
+    """
+    import glob as _glob
+    cands = [
+        os.path.join(pool_dir, "library_spectra_sorted"),
+        "/kaggle/input/datasets/nicholasnicklee/casmi26-assets-np/library_spectra_sorted",
+        "/kaggle/input/casmi26-assets-np/library_spectra_sorted",
+        "/kaggle/input/datasets/nicholasnicklee/casmi26-assets-compact/library_spectra_sorted",
+        "/kaggle/input/casmi26-assets-compact/library_spectra_sorted",
+        "/kaggle/input/casmi26-assets-pool/library_spectra_sorted",
+    ]
+    for c in cands:
+        if os.path.exists(os.path.join(c, "library_index.parquet")):
+            return c
+    for pat in ("/kaggle/input/*/library_spectra_sorted/library_index.parquet",
+                "/kaggle/input/*/*/library_spectra_sorted/library_index.parquet",
+                "/kaggle/input/*/*/*/library_spectra_sorted/library_index.parquet"):
+        hits = _glob.glob(pat)
+        if hits:
+            return os.path.dirname(hits[0])
+    return cands[0]
+
+
 ASSET_DIR = _resolve_asset_dir()
-STRUCTS = os.path.join(ASSET_DIR, "structures.parquet")
-LIB_DIR = os.path.join(ASSET_DIR, "library_spectra_sorted")
+# Candidate pool = train structures + COCONUT 2.0 + LOTUS + NPAtlas (see the
+# PRD patch: the hidden test is natural-product dark chemical space, and a
+# train-only pool left 8.6% of NP query masses with ZERO candidates in window
+# and a median of only 15). Fall back to the train-only table if the merged pool
+# is not attached.
+_POOL = os.path.join(ASSET_DIR, "candidate_pool.parquet")
+STRUCTS = _POOL if os.path.exists(_POOL) else os.path.join(ASSET_DIR, "structures.parquet")
+LIB_DIR = _resolve_lib_dir(ASSET_DIR)
 
 # Fail loudly and informatively if the assets are not where we think: printing
 # the actual mount tree turns a bare FileNotFoundError into an actionable diff.
@@ -138,6 +181,7 @@ ELECTRON = 0.000548579909
 H2O = 2 * MONO["H"] + MONO["O"]
 _M_NA, _M_K, _M_CL = MONO["Na"], MONO["K"], MONO["Cl"]
 _M_HCOOH = MONO["C"] + 2 * MONO["O"] + 2 * MONO["H"]
+_FORMULA_TOKEN = __import__("re").compile(r"([A-Z][a-z]?)(\d*)")
 
 ADDUCT_OFFSET = {
     "[M+H]+": PROTON,
@@ -155,6 +199,41 @@ ADDUCT_OFFSET = {
 
 def neutral_mass_from_precursor(mz, adduct):
     return float(mz) - ADDUCT_OFFSET[adduct]
+
+
+_MONO_ELEM = dict(MONO)
+_MONO_ELEM.update({"H": MONO["H"]})
+
+
+def formula_neutral_mass(formula):
+    """
+    Neutral mass straight from a molecular formula.
+
+    Preferred over precursor+adduct conversion: the precursor carries
+    library/instrument error (riken ~0.005 Da) and the adduct label is sometimes
+    wrong. Measured on train: adduct-derived masses deviate by >1000 ppm (~1 Da,
+    i.e. a mislabelled adduct) for 0.57% of rows, which evicts the true structure
+    from the mass window entirely. Both 0.41-class solutions do this too.
+    """
+    if not isinstance(formula, str) or not formula.strip():
+        return None
+    total, consumed = 0.0, 0
+    for el, n in _FORMULA_TOKEN.findall(formula.strip()):
+        if el not in _MONO_ELEM:
+            return None
+        total += _MONO_ELEM[el] * (int(n) if n else 1)
+        consumed += len(el) + len(n)
+    if consumed != len(formula.strip()) or total <= 0:
+        return None
+    return total
+
+
+def ion_mass(row):
+    """Neutral mass for a spectrum row: formula first, adduct conversion second."""
+    m = formula_neutral_mass(getattr(row, "molecular_formula", None))
+    if m is not None:
+        return m
+    return neutral_mass_from_precursor(row.precursor_mz, str(row.adduct))
 
 
 # ------------------------------------------------------------ peak handling
@@ -548,7 +627,7 @@ def main():
             continue
         molecules[str(row.molecule_id)].append({
             "mz": mz, "intensity": inten,
-            "neutral_mass": neutral_mass_from_precursor(row.precursor_mz, ad),
+            "neutral_mass": ion_mass(row),
         })
     log(f"  usable molecules: {len(molecules)}")
 
@@ -601,11 +680,14 @@ def main():
     ap.add_argument("--out", default=os.path.join(ROOT, "notebooks", "kaggle_submission"))
     ap.add_argument("--user", default="casmi-user")
     ap.add_argument("--slug", default="casmi26-retrieval-analog")
-    ap.add_argument("--assets-dataset", default="casmi-user/casmi26-assets")
+    ap.add_argument("--assets-dataset", default="casmi-user/casmi26-assets",
+                    help="one or more attached datasets; accepts comma-separated slugs")
     ap.add_argument("--title", default=None,
                     help="kernel title; must slugify to the requested slug, "
                          "otherwise Kaggle returns 409 Conflict on push")
     a = ap.parse_args()
+    # allow several datasets (pool and spectra were uploaded separately)
+    a.assets_dataset = [x for x in str(a.assets_dataset).split(",") if x]
 
     os.makedirs(a.out, exist_ok=True)
 
@@ -642,7 +724,8 @@ def main():
         "is_private": True,
         "enable_gpu": False,
         "enable_internet": False,
-        "dataset_sources": [a.assets_dataset],
+        "dataset_sources": list(a.assets_dataset) if isinstance(a.assets_dataset, list)
+                            else [a.assets_dataset],
         "competition_sources": ["enveda-CASMI26-molecule-id-mass-spectra"],
         "kernel_sources": [],
         "model_sources": [],

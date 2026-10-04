@@ -21,7 +21,8 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from .core import ADDUCT_OFFSET, neutral_mass_from_precursor
+from .core import (ADDUCT_OFFSET, formula_neutral_mass,
+                   neutral_mass_from_precursor)
 
 # Cleaning defaults, chosen to sit inside the usual MS/MS practice:
 # drop below 1% of base peak, outside 50-1200 m/z, merge near-duplicate peaks,
@@ -49,8 +50,26 @@ class Spectrum:
     neutral_mass: float = float("nan")
     n_peaks_raw: int = 0
     base_peak_intensity: float = float("nan")
+    formula: str = ""
 
     def __post_init__(self):
+        # Prefer the neutral mass implied by the molecular formula over the
+        # precursor+adduct conversion whenever a formula is available.
+        #
+        # Rationale, confirmed independently by both 0.41-class solutions: the
+        # precursor m/z carries library/instrument error (riken is ~0.005 Da off)
+        # and the adduct LABEL is sometimes simply wrong (seen in gnps). Formula
+        # arithmetic is immune to both.
+        #
+        # Measured in this project's own data: adduct-derived masses produced
+        # outliers of -2000..-2570 ppm (about -1 Da) -- exactly the signature of a
+        # mislabelled adduct. Those outliers evict the true structure from the
+        # mass window, which is how a correct candidate becomes unreachable.
+        if self.formula:
+            m = formula_neutral_mass(self.formula)
+            if m is not None and m > 0:
+                self.neutral_mass = m
+                return
         if np.isnan(self.neutral_mass) and self.adduct in ADDUCT_OFFSET:
             self.neutral_mass = neutral_mass_from_precursor(self.precursor_mz, self.adduct)
 
@@ -216,6 +235,7 @@ def load_spectra(df, min_peaks: int = MIN_PEAKS, verbose: bool = False,
             collision_energy=ce,
             n_peaks_raw=npr,
             base_peak_intensity=bpi,
+            formula=str(getattr(row, "molecular_formula", "") or ""),
         ))
     if verbose:
         print(f"  load_spectra: kept {len(out):,}, dropped {dropped:,} "

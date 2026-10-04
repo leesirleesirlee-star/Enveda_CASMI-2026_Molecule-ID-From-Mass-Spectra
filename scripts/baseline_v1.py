@@ -67,10 +67,21 @@ class StructureStore:
         self.keys = df["key"].to_numpy()
         self.smiles = df["smiles"].to_numpy()
         self.mass = df["mass"].to_numpy(dtype=np.float64)
+        # Molecular formula drives the v2 same-formula candidate frame. Derive it
+        # from SMILES when the table does not carry a usable formula string.
+        from casmi.core import formula_from_smiles
+        if "formula" in df.columns:
+            raw = df["formula"].to_numpy()
+        else:
+            raw = np.array([None] * len(df), dtype=object)
+        self.formula = np.array(
+            [f if isinstance(f, str) and f else formula_from_smiles(s)
+             for f, s in zip(raw, df["smiles"].to_numpy())], dtype=object)
         order = np.argsort(self.mass, kind="stable")
         self.keys = self.keys[order]
         self.smiles = self.smiles[order]
         self.mass = self.mass[order]
+        self.formula = self.formula[order]
         fp = df["fp"].to_numpy()
         dim = len(fp[0]) if len(fp) and fp[0] is not None else 0
         self.fp_dim = dim

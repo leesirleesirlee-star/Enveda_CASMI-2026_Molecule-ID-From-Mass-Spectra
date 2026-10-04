@@ -94,6 +94,54 @@ def formula_mass(formula: str) -> float:
     return total
 
 
+def formula_from_smiles(smiles: str) -> str | None:
+    """
+    Molecular formula (Hill notation) for a SMILES, or None.
+
+    Used to build the same-formula candidate frame: measured on the visible test,
+    the true structure shares the query's formula 400/400 times, while only 10.7%
+    of a +/-40 ppm mass window does. So the formula is the single most selective
+    correct filter available.
+    """
+    if not smiles or not isinstance(smiles, str):
+        return None
+    try:
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import rdMolDescriptors
+
+        RDLogger.DisableLog("rdApp.*")
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
+        return rdMolDescriptors.CalcMolFormula(mol)
+    except Exception:
+        return None
+
+
+def formula_neutral_mass(formula: str) -> float | None:
+    """
+    Neutral monoisotopic mass straight from a molecular formula, or None.
+    Neutral monoisotopic mass straight from a molecular formula, or None.
+
+    Preferred over precursor+adduct conversion whenever a formula exists, because
+    it is immune to both precursor m/z error (riken is ~0.005 Da off) and wrong
+    adduct labels (seen in gnps). Both 0.41-class solutions in this competition
+    do the same, and in this project's own data the adduct-derived route produced
+    -2000..-2570 ppm outliers -- the signature of a mislabelled adduct, which
+    evicts the true structure from the mass window.
+    """
+    if not formula or not isinstance(formula, str):
+        return None
+    f = formula.strip()
+    if not f:
+        return None
+    try:
+        m = formula_mass(f)
+    except Exception:
+        return None
+    return m if m > 0 else None
+
+
 def _delta_mass(spec: Iterable[str]) -> float:
     """Mass added to the neutral molecule by adduct modifier terms (legacy helper)."""
     total = 0.0

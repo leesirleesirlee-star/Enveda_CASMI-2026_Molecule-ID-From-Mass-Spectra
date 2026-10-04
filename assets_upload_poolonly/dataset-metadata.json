@@ -1,0 +1,10 @@
+{
+  "title": "CASMI26 NP candidate pool",
+  "id": "nicholasnicklee/casmi26-pool-only",
+  "licenses": [
+    {
+      "name": "CC0-1.0"
+    }
+  ],
+  "description": "Merged natural-product candidate pool for CASMI 2026: train structures + COCONUT 2.0 (two mirrors) + LOTUS + NPAtlas, deduplicated by InChIKey14 with 2048-bit Morgan fingerprints. 730,161 structures."
+}
