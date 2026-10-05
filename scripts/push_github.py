@@ -128,6 +128,10 @@ def main():
                        payload={"content": "write-permission probe", "encoding": "utf-8"})
     if st == 201:
         print("write access   : confirmed (a test blob was accepted and discarded)")
+    elif st == 409:
+        # GitHub answers 409 "Git Repository is empty" for blob creation on a repo with no
+        # commits -- which is exactly the first-push case. Nothing to conclude, so proceed.
+        print("write access   : not probeable (the repository is still empty) — proceeding")
     elif st in (403, 404):
         raise SystemExit(
             "This token can read the repository but not write to it.\n"
