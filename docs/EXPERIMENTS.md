@@ -1,950 +1,1045 @@
-# 实验记录
+# Experiment ledger
 
-所有改进必须同时记录 **V-A（仪器校准折）** 与 **V-C（严格身份不相交折）**。
-公开榜分数噪声约 ±0.006，小于该幅度的差异不作为结论。
+Every improvement must be recorded with **both V-A (instrument-calibration fold) and V-C
+(strict identity-disjoint fold)**. LB score noise is roughly ±0.006; differences smaller than
+that are not treated as conclusions.
 
 ---
 
-## 2026-10-03 · 基建与验证协议（无模型实验）
+## 2026-10-03 · Infrastructure and the validation protocol (no model experiments)
 
-### 环境
-| 项目 | 值 |
+### Environment
+| Item | Value |
 |---|---|
-| conda env | `casmi2026`（Python 3.11.16） |
-| rdkit | 2026.03.6（评分器固定 2026.03.3，本机为兼容的更新版） |
+| conda env | `casmi2026` (Python 3.11.16) |
+| rdkit | 2026.03.6 (grader pins 2026.03.3; ours is a compatible newer build) |
 | matchms | 0.33.1 |
 | xgboost / lightgbm | 3.2.0 / 4.7.0 |
-| GPU | RTX 5060 Laptop 8GB（sm_120, 26 SM），功耗被限 60W（上限 85W） |
-| 沙箱 | 会屏蔽 GPU；当前已切 danger-full-access |
+| GPU | RTX 5060 Laptop 8 GB (sm_120, 26 SM), power-limited to 60 W (cap 85 W) |
+| Sandbox | blocks the GPU; switched to `danger-full-access` |
 
-### 数据（官方 Kaggle API）
-官方报的字节数与本机下载结果完全一致，可作完整性校验基准：
+### Data (official Kaggle API)
+The officially reported byte counts match our download exactly, so they serve as an integrity
+baseline:
 
-| 文件 | 字节数 | 状态 |
+| File | Bytes | Status |
 |---|---|---|
-| `train.parquet` | 3,033,286,496 | 下载中（链路不稳，见下） |
-| `test.parquet` | 4,848,729 | ✅ 已校验一致 |
-| `sample_submission.csv` | 43,619 | ✅ 已校验一致 |
+| `train.parquet` | 3,033,286,496 | downloading (link unstable, see below) |
+| `test.parquet` | 4,848,729 | ✅ verified identical |
+| `sample_submission.csv` | 43,619 | ✅ verified identical |
 
-### 已验证的真实数据事实（直接读取，非二手）
-- `train.parquet`: **2,539,608 行 × 18 列**，21 个 row group。
-- `test.parquet`: **1,213 谱 / 400 分子**，12 列（**无标签、无 `precursor_error_ppm`**）。
-  此前有二手资料称 test 有 14 列含 `precursor_error_ppm`，经实测为**错误**。
-- `sample_submission.csv`: 400 行，`molecule_id,smiles`，内容为 `CCO`×25 填充占位。
-- 测试集加合物分布：[M+H]+ 959、[M-H]- 193、[M+CH2O+... 等 7 种，**全部可建模**。
-- 测试分子中性质量 246.10–439.10 Da，中位 328.19 Da。
-- `enveda-np-examples` 位于**第 20 号 row group（0-based）**，1,184 行 → V-A 折。
+### Verified facts about the real data (read directly, not second-hand)
+- `train.parquet`: **2,539,608 rows × 18 columns**, 21 row groups.
+- `test.parquet`: **1,213 spectra / 400 molecules**, 12 columns (**no labels, no
+  `precursor_error_ppm`**). Second-hand material claimed 14 columns including
+  `precursor_error_ppm`; measured — **wrong**.
+- `sample_submission.csv`: 400 rows, `molecule_id,smiles`, filled with `CCO`×25 placeholders.
+- Test adduct distribution: [M+H]+ 959, [M-H]- 193, [M+CH2O+… etc., 7 kinds, **all modelable**.
+- Test molecule neutral masses 246.10–439.10 Da, median 328.19 Da.
+- `enveda-np-examples` sits in **row group 20 (0-based)**, 1,184 rows → the V-A fold.
 
-### 加合物模型验证（真实数据）
-用同分子不同加合物必须推出同一中性质量做交叉一致性检验：
+### Adduct-model verification (real data)
+Cross-consistency check: different adducts of the same molecule must yield the same neutral
+mass.
 
-- 106 个多加合物分子，spread 中位数 **1.27 ppm**，p90 **3.07 ppm**
-- **99.1%** 落在 10 ppm 内（与竞赛的 10 ppm 容差一致）
-- 唯一离群：`m_517c87`（3008 ppm），[M+NH4]+ 与 [M+H]+ 中性质量差约 1.01 Da，
-  疑为该谱加合物标注错误或共洗脱同量异位素，占 1/106 = 0.9%
+- 106 multi-adduct molecules; median spread **1.27 ppm**, p90 **3.07 ppm**
+- **99.1%** fall within 10 ppm (matching the competition's 10 ppm tolerance)
+- One outlier: `m_517c87` (3008 ppm) — [M+NH4]+ vs [M+H]+ differ by ~1.01 Da in neutral mass;
+  likely a mislabelled adduct or a co-eluting isobar. 1/106 = 0.9%
 
-**结论：加合物质量偏移表（含电子质量修正）与真实数据自洽。**
-电子质量在 m/z 330 处等于 **1.66 ppm**，相对 10 ppm 容差不可忽略——这是必须修对的一项。
+**Conclusion: the adduct mass-shift table (including the electron-mass correction) is
+self-consistent with the real data.** The electron mass equals **1.66 ppm** at m/z 330 —
+non-negligible against a 10 ppm tolerance, so it must be modelled correctly.
 
-### 代码级修复记录（自检捕获的真实 bug）
-| 模块 | bug | 后果 |
+### Code-level fixes (real bugs caught by self-checks)
+| Module | Bug | Consequence |
 |---|---|---|
-| `core.py` | [M+H]+ 偏移漏算电子质量 | 系统偏差 0.55 mDa（1.66 ppm @ m/z330） |
-| `core.py` | [M+Na]+/[M+K]+ 按 "Na+H" 计算 | 偏差约 1 Da，该加合物候选全错 |
-| `spectra.py` | 峰合并分组 off-by-one | 合并了错误的一对峰，污染所有相似度分数 |
-| `spectra.py` | `x or ()` 施加于 numpy 数组 | 抛 ValueError，谱加载直接失败 |
-| `scripts/robust_download.py` | chunk 尺寸变更后按索引复用旧分块 | **静默损坏** parts 目录（真实发生过） |
+| `core.py` | [M+H]+ shift omitted the electron mass | systematic 0.55 mDa bias (1.66 ppm @ m/z 330) |
+| `core.py` | [M+Na]+/[M+K]+ computed as "Na+H" | ~1 Da off; every candidate for those adducts wrong |
+| `spectra.py` | Peak-merge grouping off-by-one | merged the wrong peak pair, contaminating all similarity scores |
+| `spectra.py` | `x or ()` applied to a numpy array | ValueError; spectrum loading failed outright |
+| `scripts/robust_download.py` | Reused old chunks by index after the chunk size changed | **silently corrupted** the parts directory (this really happened) |
 
-### 数据获取事故记录
-| 尝试 | 结果 |
+### Data-acquisition incident record
+| Attempt | Result |
 |---|---|
-| Kaggle CLI 单连接 | 0.5 MB/s → 崩溃到 30 kB/s，`IncompleteRead`，5 次重试后失败（仅 84MB） |
-| HuggingFace 单连接（深偏移） | SSL `UNEXPECTED_EOF` |
-| HuggingFace 单连接（稳定段） | **0.181 MB/s**（稳定，无错误） |
-| 8 并发流 | 0.915 MB/s（单流退化到 0.114 MB/s） |
-| 24 worker / 8MB 分块 | 停顿在重试退避中，无进展 |
-| 12 worker / 16MB 分块 | 峰值 2.75 MB/s，随后逐步衰减 |
-| 双镜像抢同一批 chunk | **无效**：两进程竞争同一索引，不增加吞吐 |
-| 6+6 worker / 4MB 分块 / 双镜像按索引分区 | ✅ **成功**，稳定 0.7–2.4 MB/s |
+| Kaggle CLI, single connection | 0.5 MB/s → collapsed to 30 kB/s, `IncompleteRead`, failed after 5 retries (only 84 MB) |
+| HuggingFace, single connection (deep offset) | SSL `UNEXPECTED_EOF` |
+| HuggingFace, single connection (stable range) | **0.181 MB/s** (stable, no errors) |
+| 8 concurrent streams | 0.915 MB/s (per-stream degraded to 0.114 MB/s) |
+| 24 workers / 8 MB chunks | stalled in retry backoff, no progress |
+| 12 workers / 16 MB chunks | peak 2.75 MB/s, then decayed |
+| Two mirrors racing for the same chunks | **useless**: both processes contend for the same index, throughput unchanged |
+| 6+6 workers / 4 MB chunks / mirrors partitioned by index | ✅ **worked**, steady 0.7–2.4 MB/s |
 
-**根因**：到 HF 的国际链路本身不稳定，单连接约 0.18 MB/s，链路总上限约 1–2 MB/s。
-**结论**：基础设施限制，非代码可优化。
+**Root cause**: the international link to HF is itself unstable; a single connection gives
+~0.18 MB/s and the link tops out around 1–2 MB/s.
+**Conclusion**: an infrastructure limit, not something code can fix.
 
-### 我在这条路径上犯的 4 个错误（全部记录）
-1. 想"只抓第 21 个 row group"跳过整包 → **技术上不成立**：文件中段的字节区间不是
-   合法 parquet 文件（`Parquet magic bytes not found`），因为该 row group 在文件末尾。
-2. 双镜像并行抢同一批 chunk → 只增加竞争，不增加吞吐。
-3. 24 worker / 8MB 分块 → 全部卡在重试退避，零进展。
-4. **把 chunk 从 16MB 改成 4MB，按索引复用了旧块** → 静默损坏 544MB 下载成果。
-   已加 manifest 防呆，layout 变更时自动丢弃旧块。
-5. **stitcher 在未集齐所有块时就拼装** → 用本实例拥有的 ~362 块去拼 724 个索引，
-   静默产出截断文件（差 132.8 MB）。已改为：**集齐校验通过才允许写出**，
-   否则 exit 2 并列出缺失块。
+### Four mistakes I made on this path (all recorded)
+1. Trying to fetch "only row group 21" to skip the whole pack → **not technically possible**:
+   a byte range in the middle of the file is not a valid parquet file
+   (`Parquet magic bytes not found`), because that row group sits at the end.
+2. Two mirrors racing for the same chunks → adds contention, not throughput.
+3. 24 workers / 8 MB chunks → everything stuck in retry backoff, zero progress.
+4. **Changing the chunk size from 16 MB to 4 MB while reusing old chunks by index** →
+   silently corrupted 544 MB of downloaded data. A manifest guard was added; stale chunks are
+   discarded when the layout changes.
+5. **The stitcher assembled before all chunks arrived** → assembled 724 indices from the ~362
+   chunks this instance held, silently producing a truncated file (132.8 MB short). Changed to:
+   **write only after the completeness check passes**, otherwise exit 2 and list the missing
+   chunks.
 
-### ✅ 数据获取最终结果
-| 校验项 | 结果 |
+### ✅ Final data-acquisition result
+| Check | Result |
 |---|---|
-| `train.parquet` 字节数 | **3,033,286,496** — 与官方**完全一致** |
-| 行数 | **2,539,608** ✅ |
-| 列数 | **18** ✅ |
-| row group 数 | **21** ✅ |
-| 首/末 row group 读取 | 均正常 ✅ |
-| row group 20 | **1,184 行 / 251 个分子**，`ingest_lib` 全为 `enveda-np-examples` ✅ |
+| `train.parquet` bytes | **3,033,286,496** — **exactly** matches the official figure |
+| Rows | **2,539,608** ✅ |
+| Columns | **18** ✅ |
+| Row groups | **21** ✅ |
+| First/last row-group read | both fine ✅ |
+| Row group 20 | **1,184 rows / 251 molecules**, `ingest_lib` all `enveda-np-examples` ✅ |
 
-> 注：V-A 折实测为 **251 个分子**（此前二手资料称 250，以实测为准）。
+> Note: the V-A fold measured **251 molecules** (second-hand material said 250; measurement wins).
 
-### 尚待完成
-- [x] 构建离线资产（`library_spectra.parquet` + `structures.parquet`）
-- [x] 在真实 train 上构建三段式折并定位 V-A
-- [ ] 完整 V-A / V-C 基线运行
-- [ ] 复现公开基线（质量窗口 + 直接谱匹配）拿到可信 V-A 数字
+### Outstanding
+- [x] Build offline assets (`library_spectra.parquet` + `structures.parquet`)
+- [x] Build the three-fold split on the real train set and locate V-A
+- [ ] Full V-A / V-C baseline run
+- [ ] Reproduce the public baseline (mass window + direct spectral match) for a trustworthy V-A number
 
 ---
 
-## 2026-10-03 · 真实 train schema 更正（重要）
+## 2026-10-03 · Real train schema correction (important)
 
-二手资料与本机实测**不一致**，以实测为准：
+Second-hand material and our measurements **disagree**; measurements win:
 
 | | train.parquet | test.parquet |
 |---|---|---|
-| 列数 | **18** | **12** |
-| `molecule_id` | **不存在** ❌ | 存在 |
-| `spectrum_id` | **不存在** ❌ | 存在 |
-| 分子身份 | 只能用结构（`normalized_smiles`/`inchikey14`） | `molecule_id` |
-| 标签 | `normalized_smiles`, `inchikey14`, `molecular_formula`, `ingest_lib` | 无 |
+| Columns | **18** | **12** |
+| `molecule_id` | **absent** ❌ | present |
+| `spectrum_id` | **absent** ❌ | present |
+| Molecule identity | structure only (`normalized_smiles`/`inchikey14`) | `molecule_id` |
+| Labels | `normalized_smiles`, `inchikey14`, `molecular_formula`, `ingest_lib` | none |
 
-**两个文件的主键完全不相交**。train 中一个"分子"= 一个结构，其多条谱就是该分子的
-重复采集——这正好对应竞赛要求的"按分子输出一个候选列表、综合该分子全部谱"。
+**The two files' primary keys are completely disjoint.** In train, one "molecule" = one
+structure, and its several spectra are repeated acquisitions of that molecule — exactly
+matching the competition's requirement to emit one candidate list per molecule, aggregating
+all of its spectra.
 
-### 离线资产构建结果
-| 资产 | 规模 | 耗时 |
+### Offline asset build
+| Asset | Size | Time |
 |---|---|---|
-| `library_spectra.parquet` | **2,367,034** 库谱（保留 12 个来源，清洗后 ≥3 峰） | 164 s |
-| `structures.parquet` | **275,810** 唯一结构（含 Morgan 指纹） | 32 s |
+| `library_spectra.parquet` | **2,367,034** library spectra (12 sources kept, ≥3 peaks after cleaning) | 164 s |
+| `structures.parquet` | **275,810** unique structures (with Morgan fingerprints) | 32 s |
 
-### 三段式折（真实数据实测规模）
-| 折 | 结构数 | 查询谱数 | 库规模 | 含义 |
+### The three folds (measured on real data)
+| Fold | Structures | Query spectra | Library size | Meaning |
 |---|---|---|---|---|
-| **V-A** | **250** | **1,179**（全 timsTOF） | 275,810 | 仪器迁移（查询只用校准谱，库留其他来源） |
-| **V-B** | **233,483** | 1,969,062 | 275,810 | 答案保留 → 检索上限 |
-| **V-C** | **41,202** | 348,005 | **235,068** | 答案移除 → 严格外推 |
+| **V-A** | **250** | **1,179** (all timsTOF) | 275,810 | Instrument transfer (query uses calibration spectra only; library keeps other sources) |
+| **V-B** | **233,483** | 1,969,062 | 275,810 | Answers kept → retrieval ceiling |
+| **V-C** | **41,202** | 348,005 | **235,068** | Answers removed → strict extrapolation |
 
-V-A 库中命中 248/250 答案（2 个缺失待查）。
+The V-A library contains 248/250 answers (2 missing, under investigation).
 
-### 首个可信基线数字
+### First trustworthy baseline number
 ```
-V-A（5 分子冒烟，analog 开启）
+V-A (5-molecule smoke test, analog enabled)
   MRR@25 = 0.8182   top1 = 0.800   hit@10 = 0.800   hit@25 = 1.000
   oracle recall@1/10/25 = 0.800 / 0.800 / 1.000
-  耗时 13.1 s/分子
+  13.1 s/molecule
 ```
-**注意**：n=5，方差极大，**不可作为结论**。仅证明端到端流水线可用。
-oracle recall@25 = 1.000 说明真值结构确实进入了候选集 → 当前瓶颈是**排序**而非召回。
+**Caution**: n=5, enormous variance, **not a conclusion**. It only proves the pipeline runs
+end to end. `oracle recall@25 = 1.000` shows the true structure does enter the candidate set →
+the current bottleneck is **ranking**, not recall.
 
 ---
 
-## 2026-10-03 · 全量 V-A 结果与一个重要警告
+## 2026-10-03 · Full V-A results and an important warning
 
-### 性能优化（23.3 s/分子 → 2.08 s/分子，11× 提速）
-| 阶段 | 优化前 | 优化后 | 手段 |
+### Performance work (23.3 s/molecule → 2.08 s/molecule, 11×)
+| Stage | Before | After | Technique |
 |---|---|---|---|
-| 折叠构建 | 749 s / 13.3 GB | **21 s / ~2 GB** | 惰性折叠：只为查询分子物化 Spectrum 对象 |
-| 单分子打分 | 23.3 s | **2.08 s** | 谱按 0.01 Da 分箱 → numpy 批量点积；候选谱一次性批量分箱 |
-| 库加载 | 90 s / 10 GB | **0.4 s** | 按 key 排序分区（24 个分区），仅按需读取 |
+| Fold construction | 749 s / 13.3 GB | **21 s / ~2 GB** | lazy folding: materialise `Spectrum` objects only for query molecules |
+| Per-molecule scoring | 23.3 s | **2.08 s** | bin spectra at 0.01 Da → numpy batch dot products; bin candidate spectra in one batch |
+| Library load | 90 s / 10 GB | **0.4 s** | partition by key (24 partitions), read on demand |
 
-关键正确性发现：**位移余弦的分母不能用库谱全范数**。位移假设下只有"有对应
-位移峰"的库峰才参与匹配，用全范数会让单一匹配峰得到 >1 的分数（实测 1.3038）。
-已改为在交集 B'∩L 上取范数，与参考贪心实现一致。
+Key correctness finding: **the shift-cosine denominator must not use the library spectrum's
+full norm.** Under a shift hypothesis only library peaks with a matching shifted peak
+participate; using the full norm lets a single matching peak score above 1 (measured 1.3038).
+Changed to take the norm over the intersection B'∩L, consistent with the reference greedy
+implementation.
 
-### 全量 V-A 结果（250 分子，520 s）
+### Full V-A results (250 molecules, 520 s)
 ```
 MRR@25 = 1.0000   top1 = 1.000   hit@10 = 1.000   hit@25 = 1.000
 oracle recall@1 = 0.936   recall@5 = 0.984   recall@25 = 0.988
 ```
 
-### ⚠️ 这个 1.000 是危险信号，不是好消息
+### ⚠️ That 1.000 is a danger signal, not good news
 
-**原因**：V-A 的 250 个 enveda-np-examples 结构**全部也出现在其他 ingest 库中**
-（前面已实测：250/250）。所以库中总是存在"同一结构的其他仪器谱"，精确命中唾手可得。
-V-A 的库保留了答案（250/250 在库内）。
+**Why**: all 250 V-A `enveda-np-examples` structures **also appear in other ingest libraries**
+(measured earlier: 250/250). So the library always contains "the same structure's spectrum from
+another instrument", and an exact hit is trivial. The V-A library keeps the answers
+(250/250 present).
 
-**证据**：公开榜可复现基线约 0.328，SOTA 约 0.41。本地方案在真实迁移场景下不可能得 1.000。
-**结论：V-A 不能作为主校准指标**，它系统性高估。
+**Evidence**: the reproducible public baseline is ~0.328 and SOTA ~0.41. Our local approach
+cannot possibly score 1.000 under real transfer.
+**Conclusion: V-A cannot serve as the primary calibration metric** — it systematically
+overestimates.
 
-### 因此新增 V-A-hard（真正的仪器迁移测试）
-| 折 | 查询数 | 库规模 | 答案仍在库内 |
+### Hence V-A-hard (a real instrument-transfer test)
+| Fold | Queries | Library size | Answers still in library |
 |---|---|---|---|
-| V_A | 250 | 275,810 | **250**（平凡） |
-| **V_A_hard** | 250 | 275,560 | **0** ← 精确命中不可能，必须靠 analog/证据通道 |
+| V_A | 250 | 275,810 | **250** (trivial) |
+| **V_A_hard** | 250 | 275,560 | **0** ← an exact hit is impossible; analog/evidence channels required |
 
-V-A-hard 移除查询自身结构，这才是"分子不在谱库中"的现实设定，与隐藏测试集更接近。
+V-A-hard removes the query's own structure — the realistic "the molecule is not in the
+library" setting, closer to the hidden test set.
 
-### 三个折的分工（修正后）
-| 折 | 衡量什么 | 是否可信 |
+### Division of labour between the folds (after correction)
+| Fold | What it measures | Usable? |
 |---|---|---|
-| V_A | 同结构跨仪器检索可得性 | ❌ 太易，仅作健全性检查 |
-| **V_A_hard** | 无精确命中时的 analog/证据能力 | ✅ 主指标候选 |
-| V_B（233k） | 同源留出，答案保留 → 检索上限 | ✅ 需抽样 |
-| **V_C** | 身份不相交，答案移除 → 严格外推 | ✅ 主指标候选 |
+| V_A | Availability via same-structure cross-instrument retrieval | ❌ too easy; sanity check only |
+| **V_A_hard** | Analog/evidence ability when no exact hit exists | ✅ primary-metric candidate |
+| V_B (233k) | Same-source hold-out, answers kept → retrieval ceiling | ✅ needs sampling |
+| **V_C** | Identity-disjoint, answers removed → strict extrapolation | ✅ primary-metric candidate |
 
-### 待办
-- [ ] V-C 全量结果（299 分子，运行中，6.4 s/分子）
-- [ ] V-A_hard 结果
-- [ ] V_B 抽样结果
+### TODO
+- [ ] Full V-C results (299 molecules, running, 6.4 s/molecule)
+- [ ] V-A_hard results
+- [ ] V_B sampled results
 
-### 本轮捕获的真实 bug（自检 + 真实数据）
-| 位置 | bug | 后果 |
+### Real bugs caught this round (self-checks + real data)
+| Location | Bug | Consequence |
 |---|---|---|
-| `load_spectra` | 假设存在 `spectrum_id`/`molecule_id` | 真实 train **无此列**，直接崩 |
-| `build_folds` | `setdefault` 取"首个来源"判 V-A | 250 个 np-examples 结构全部也在 riken/gnps/mona… 中，多数首个来源不是它 → **V-A 折叠为空** |
-| `build_folds` | 临时列名以下划线开头 | `itertuples` 重命名为 `_1`，按名取不到 |
-| `score_molecule` | 扫描集 = ±200 Da 内全部化合物 | 每分子数万次贪心峰匹配，**不可用**（>10 min/分子） |
-| `direct_match_query` | 硬编码 `dm = 0` | **静默关闭整个 analog 通道**，且仍返回看似合理的分数 |
-| `matching` 自检 | 测试用两条完全相同的库谱 | 无法区分 direct 与 analog 命中，测得无意义 |
-
+| `load_spectra` | Assumed `spectrum_id`/`molecule_id` exist | real train **has no such columns**; crashed outright |
+| `build_folds` | `setdefault` took the "first source" to identify V-A | all 250 np-examples structures also appear in riken/gnps/mona…, so for most the first source is not it → **the V-A fold came out empty** |
+| `build_folds` | Temporary column names started with an underscore | `itertuples` renamed it to `_1`; lookup by name failed |
+| `score_molecule` | Scan set = every compound within ±200 Da | tens of thousands of greedy peak matches per molecule — **unusable** (>10 min/molecule) |
+| `direct_match_query` | Hard-coded `dm = 0` | **silently disabled the entire analog channel** while still returning plausible-looking scores |
+| `matching` self-check | Test used two identical library spectra | could not distinguish a direct from an analog hit; the measurement was meaningless |
 
 ---
 
-## 2026-10-03 · 🔴 决定性发现：可见 test 的 1,213 张谱**全部**逐字来自 train
+## 2026-10-03 · 🔴 Decisive finding: all 1,213 visible test spectra are verbatim from train
 
-用峰集合 MD5 指纹（round 到 1e-4 Da）对全部 1,213 张可见 test 谱做精确匹配：
+Exact matching of all 1,213 visible test spectra by peak-set MD5 fingerprint (rounded to
+1e-4 Da):
 
-\test spectra: 1213, unique fingerprints: 1,213
-扫描 train 2,539,608 行后：
-  === test 中 1213 张谱在 train 中有完全相同的峰集合 (100.0%) ===
-  来源分布: {'enveda-180': 1213}
-\
-**结论：可见 test.parquet 的每一张谱都逐字存在于 train 中，全部来自 enveda-180。**
+```
+test spectra: 1213, unique fingerprints: 1,213
+after scanning 2,539,608 train rows:
+  === all 1213 test spectra have an identical peak set in train (100.0%) ===
+  source distribution: {'enveda-180': 1213}
+```
 
-### 这直接解释了本地 0.98 与公开榜 0.328 的巨大落差
+**Conclusion: every spectrum in the visible `test.parquet` exists verbatim in train, all from
+`enveda-180`.**
 
-| 事实 | 含义 |
+### This directly explains the gulf between local 0.98 and the public 0.328
+
+| Fact | Meaning |
 |---|---|
-| 可见 test 谱 100% 逐字来自 train（enveda-180） | 可见 test 是**占位样本**，不是真实评测集 |
-| 评分时 Kaggle 换成隐藏 test（分子 ID 不同） | 可见 test 上的任何成绩都无意义 |
-| 隐藏 test 分子**大概率不在** train 中 | 真实任务是新分子识别，比我的折难得多 |
+| Visible test spectra are 100% verbatim from train (`enveda-180`) | the visible test is a **placeholder**, not the real evaluation set |
+| Kaggle swaps in a hidden test at grading time (different molecule IDs) | any score on the visible test is meaningless |
+| Hidden-test molecules are **very likely not** in train | the real task is novel-molecule identification, far harder than our folds |
 
-**因此本地折分数（0.98–1.00）系统性地高估。** 三层原因：
-1. 我的折的答案**都在**库中（V-A/V-B），或至少在库内有近似物
-2. 库谱与查询谱常来自**同一批采集记录**（同仪器、同来源）
-3. 可见 test 本身就是从 train 采样出来的
+**Hence our local fold scores (0.98–1.00) systematically overestimate.** Three reasons:
+1. Our folds' answers are **all in** the library (V-A/V-B), or at least have close neighbours
+2. Library and query spectra often come from the **same acquisition batch** (same instrument,
+   same source)
+3. The visible test itself is sampled from train
 
-### 三个折的最终结果（全部偏高，不可外推）
-| 折 | 查询数 | MRR@25 | top1 | hit@25 | oracle recall@25 | 评价 |
+### Final results for the three folds (all inflated, not extrapolable)
+| Fold | Queries | MRR@25 | top1 | hit@25 | oracle recall@25 | Assessment |
 |---|---|---|---|---|---|---|
-| V_A | 250 | **1.0000** | 1.000 | 1.000 | 0.988 | ❌ 库内 250/250 有答案，平凡 |
-| V_C | 299 | **0.9799** | 0.980 | 0.980 | 0.980 | ⚠️ 偏高 |
-| V_A_hard | 250 | 待测 | | | | ✅ 答案从库中移除（250→0） |
-| V_B | 233,483 | 未抽样 | | | | 检索上限 |
+| V_A | 250 | **1.0000** | 1.000 | 1.000 | 0.988 | ❌ 250/250 answers in library; trivial |
+| V_C | 299 | **0.9799** | 0.980 | 0.980 | 0.980 | ⚠️ inflated |
+| V_A_hard | 250 | pending | | | | ✅ answers removed from library (250→0) |
+| V_B | 233,483 | unsampled | | | | retrieval ceiling |
 
-### 校准结论（对后续所有实验生效）
-- **本地折只能用于相对比较**（A/B 消融、回归检测），**不能预测榜分**
-- **唯一可信的外部信号是 Kaggle 提交**（5 次/天）
-- 下一步优先级：**尽早做一次真实提交**，用榜分锚定本地折的偏移量
-- 候选集规模很小（±40 ppm @330 Da 只有 27–49 个结构），说明召回不是瓶颈；
-  真正的难点是**隐藏 test 的分子是否存在于候选池中**
-
+### Calibration conclusions (in force for all later experiments)
+- **Local folds are usable only for relative comparison** (A/B ablations, regression
+  detection); they **do not predict the LB score**
+- **The only trustworthy external signal is a Kaggle submission** (5/day)
+- Next priority: **make a real submission as early as possible** to anchor the local folds'
+  offset
+- The candidate set is small (±40 ppm @ 330 Da gives only 27–49 structures), so recall is not
+  the bottleneck; the real difficulty is **whether the hidden test's molecules exist in the
+  candidate pool at all**
 
 ---
 
-## 2026-10-03 · ⛔ 阻塞：Kaggle 凭证缺少写权限，无法提交
+## 2026-10-03 · ⛔ Blocked: Kaggle credentials lack write permission, cannot submit
 
-### 已实现且已验证的部分
-- 自包含提交 Notebook（
-otebooks/kaggle_submission/），离线可用、不用 RDKit
-- 首个合法 outputs/submission.csv：400 行、每分子 24–25 候选、格式校验 VALID
-- Notebook 内嵌代码与本地模块产出一致性：**400 个分子 Top-1 100% 相同**
+### Implemented and verified
+- Self-contained submission notebook (`notebooks/kaggle_submission/`), offline-capable, no RDKit
+- First valid `outputs/submission.csv`: 400 rows, 24–25 candidates per molecule, format check VALID
+- Notebook-embedded code vs local modules: **top-1 identical for all 400 molecules**
 
-### 阻塞点（已定位到具体错误）
-\auth OK; user = nicholasnicklee
+### The blocker (localised to a specific error)
+```
+auth OK; user = nicholasnicklee
 dataset_status -> HTTPError 403 Client Error: Forbidden for url:
   https://api.kaggle.com/v1/datasets.DatasetApiService/GetDatasetStatus
-\
-| 操作 | 结果 |
+```
+| Operation | Result |
 |---|---|
-| 读竞赛元数据 / 提交历史 / 公开数据集列表 | ✅ 可用 |
-| 下载竞赛数据 | ✅ 可用 |
-| 查询 GPU 配额 | ✅ 可用 |
-| **创建 Kaggle Dataset** | ❌ 403 |
-| **kernels push（推 notebook）** | ❌ 阻塞（同权限） |
+| Read competition metadata / submission history / public dataset list | ✅ works |
+| Download competition data | ✅ works |
+| Query GPU quota | ✅ works |
+| **Create a Kaggle Dataset** | ❌ 403 |
+| **kernels push (push a notebook)** | ❌ blocked (same permission) |
 
-即使是**单文件最小数据集**也失败，因此不是资产大小或元数据格式问题，
-而是当前 KGAT_ token **只有读权限**。
+Even a **minimal single-file dataset** fails, so this is not about asset size or metadata
+format: the current `KGAT_` token **has read permission only**.
 
-### 影响
-- 无法把 335.6MB 资产上传为 Kaggle Dataset
-- 无法推送 Notebook → **无法产生任何真实榜分**
-- 本地折已知系统性高估（可见 test 100% 来自 train），因此**没有真实榜分就无法校准**
+### Impact
+- Cannot upload the 335.6 MB of assets as a Kaggle Dataset
+- Cannot push the notebook → **cannot produce any real LB score**
+- Local folds are known to overestimate (visible test is 100% from train), so **without a real
+  LB score there is no calibration at all**
 
-### 解除方式（任选其一）
-1. **提供 legacy API key**：Kaggle → Settings → API → Create New Token，
-   得到含 username + key 的 kaggle.json（key 为 32 位十六进制，非 KGAT_）。
-   CLI 的写操作走 legacy 鉴权路径。
-2. **在网页端手动建数据集**：把 rtifacts/kaggle_assets/ 上传为
-   
-icholasnicklee/casmi26-assets，之后我仍需要写权限来 push notebook。
-3. **检查 KGAT token 的 scope**：若 Kaggle 支持为 PAT 勾选 datasets:write /
-   kernels:write，重新生成带写权限的 token。
+### Ways to unblock (any one)
+1. **Provide a legacy API key**: Kaggle → Settings → API → Create New Token, yielding a
+   `kaggle.json` with username + key (a 32-hex key, not `KGAT_`). CLI write operations use the
+   legacy auth path.
+2. **Create the dataset manually in the web UI**: upload `artifacts/kaggle_assets/` as
+   `nicholasnicklee/casmi26-assets`; we would still need write permission to push the notebook.
+3. **Check the KGAT token's scope**: if Kaggle supports ticking `datasets:write` /
+   `kernels:write` for a PAT, regenerate a token with write permission.
 
-### 当前可继续推进的工作（不依赖写权限）
-- V_A_hard 结果（严格 analog-only 折）
-- V_B 抽样（检索上限）
-- 补第三、第四通道（虚拟碎片、神经指纹）——但**没有榜分反馈，改进无法验证**，
-  继续做有过度优化本地折的风险
-
+### Work that can proceed meanwhile (no write permission needed)
+- V_A_hard results (strict analog-only fold)
+- V_B sampling (retrieval ceiling)
+- Adding third/fourth channels (virtual fragments, neural fingerprint) — but **without LB
+  feedback improvements cannot be verified**, and continuing risks over-fitting the local folds
 
 ---
 
-## 2026-10-03 · 🔴 第二个评估缺陷：严格折从未真正移除答案（推翻上一节结论）
+## 2026-10-03 · 🔴 Second evaluation defect: the strict folds never actually removed the answers (overturns the previous section)
 
-### 症状
-V_A_hard **也是 MRR@25 = 1.000**，但它声明答案在库内为 0/250 → 自相矛盾。
+### Symptom
+V_A_hard was **also MRR@25 = 1.000**, yet it declares 0/250 answers in the library →
+self-contradictory.
 
-### 排查
-1. 先查是否只是谱级逐字重复：构建 V_A_hard 的 1,178 个查询谱指纹，在全 train 中扫描
-   —— 只有 **19/1,178** 逐字命中，且全部是 np-examples 自身。**不足以解释 1.000**。
-2. 再查代码：score_molecule 从 **完整结构库 store（275,810）** 生成候选，
-   **从不读取 old.library**。
+### Investigation
+1. First checked whether it was merely spectrum-level verbatim duplication: built fingerprints
+   for V_A_hard's 1,178 query spectra and scanned all of train — only **19/1,178** matched
+   verbatim, all of them np-examples themselves. **Not enough to explain 1.000.**
+2. Then the code: `score_molecule` generates candidates from the **full structure store
+   (275,810)** and **never reads `fold.library`**.
 
-### 根因
-严格折（V_A_hard / V_C）只把 old.library 削减了，但打分器用的是结构库全集，
-所以被移除的答案照样在候选池里。**三个折的答案移除从未生效。**
+### Root cause
+The strict folds (V_A_hard / V_C) only shrank `fold.library`, but the scorer used the full
+structure store, so removed answers stayed in the candidate pool. **Answer removal never took
+effect in any of the three folds.**
 
-### 影响（必须诚实记录）
-| 折 | 之前的数字 | 状态 |
+### Impact (recorded honestly)
+| Fold | Previous number | Status |
 |---|---|---|
-| V_A | 1.0000 | ⚠️ 无效（V_A 本就不移除，需重跑确认） |
-| V_A_hard | 1.0000 | ❌ **无效**，未真正排除答案 |
-| V_C | 0.9799 | ❌ **无效**，未真正排除答案 |
+| V_A | 1.0000 | ⚠️ invalid (V_A removes nothing anyway; re-run to confirm) |
+| V_A_hard | 1.0000 | ❌ **invalid**, answers were never excluded |
+| V_C | 0.9799 | ❌ **invalid**, answers were never excluded |
 
-**结论：此前所有本地折数字都不可用，必须用修复后的代码重跑。**
+**Conclusion: all previous local fold numbers are unusable and must be re-run with the fixed
+code.**
 
-### 修复
-- score_molecule 增加 exclude_keys 参数，在候选生成阶段就剔除不在折库中的结构
-- main() 由 ll_keys - set(fold.library) 推导排除集并传入
-- 运行时打印实际排除数量（本次 V_A_hard = 250），便于确认修复生效
+### Fix
+- `score_molecule` gained an `exclude_keys` parameter, removing structures absent from the
+  fold library at candidate-generation time
+- `main()` derives the exclusion set from `all_keys - set(fold.library)` and passes it in
+- It prints the number actually excluded at runtime (250 for V_A_hard) so the fix is visible
 
-### 教训（已写入项目规则）
-移除答案是任何检索类验证协议的核心不变量，必须**断言**而不是假设：
-打分器若绕过折库，整个协议就是空的。后续所有严格折都必须打印并校验排除数。
-
+### Lesson (now a project rule)
+Removing the answers is the core invariant of any retrieval-style validation protocol and must
+be **asserted**, not assumed: if the scorer bypasses the fold library, the whole protocol is
+vacuous. Every strict fold must print and check its exclusion count.
 
 ---
 
-## 2026-10-03 · 修复后的真实数字，与诊断结论
+## 2026-10-03 · Post-fix real numbers and the diagnostic conclusion
 
-### 修复后重跑 V_A_hard（真正排除 250 个答案结构）
-\V_A_hard  MRR@25 = 0.0476   top1 = 0.044   hit@25 = 0.056
+### Re-running V_A_hard after the fix (truly excluding 250 answer structures)
+```
+V_A_hard  MRR@25 = 0.0476   top1 = 0.044   hit@25 = 0.056
 oracle recall@1/25 = 0.040 / 0.056
-\对比修复前的 1.0000 —— **同一个折，差 21 倍**。此前三个折的数字全部作废。
+```
+Against 1.0000 before the fix — **the same fold, a 21× difference**. All three folds' earlier
+numbers are void.
 
-### 为什么 oracle recall 只有 0.056？已定位
-真值结构**确实在结构库中（250/250 都能查到）**，且质量偏差很小：
-| 指标 | 值 |
+### Why is oracle recall only 0.056? Localised
+The true structures **are in the structure store (250/250 found)** and mass deviation is small:
+
+| Metric | Value |
 |---|---|
-| 真值结构缺失 | **0 / 250** |
-| 质量偏差中位数 | **1.4 ppm** |
-| 偏差 ≤ 40 ppm 的比例 | **93.6%** |
-| 最差 5 个 | 约 −2000 ~ −2570 ppm（≈ −1 Da，疑 adduct 标注为 [M+H]+ 实为 [M-H]- 之类） |
+| True structure missing | **0 / 250** |
+| Median mass deviation | **1.4 ppm** |
+| Fraction within 40 ppm | **93.6%** |
+| Worst 5 | ≈ −2000 to −2570 ppm (≈ −1 Da; suspected adduct mislabels, e.g. [M+H]+ that is really [M-H]-) |
 
-所以召回失败**不是质量窗口算错**，而是：**答案结构被排除后，库中该分子的谱也不存在**，
-于是直接通道无从命中，analog 通道又无法传播到一个被排除的结构。
+So recall failure is **not** a mis-computed mass window. It is: **once the answer structure is
+excluded, that molecule's spectra are gone from the library too**, so the direct channel cannot
+hit and the analog channel cannot propagate to an excluded structure.
 
-### 这暴露了一个根本性的评估困境
-| 折 | 答案在库？ | MRR@25 | 是否可用 |
+### This exposes a fundamental evaluation dilemma
+| Fold | Answers in library? | MRR@25 | Usable? |
 |---|---|---|---|
-| V_A / V_C | 在 | 0.98–1.00 | ❌ 平凡（谱级近乎逐字） |
-| V_A_hard | 不在 | **0.048** | ❌ 不可能（结构被移除则谱也不在） |
+| V_A / V_C | yes | 0.98–1.00 | ❌ trivial (spectra nearly verbatim) |
+| V_A_hard | no | **0.048** | ❌ impossible (remove the structure and its spectra go too) |
 
-**两个极端都不代表真实任务。** 真实隐藏测试集介于两者之间：
-部分分子在库中有谱（可检索），部分是类似物/全新（需 analog 与证据通道）。
-**本地没有任何折能复现这个混合分布** —— 这正是为什么必须先拿到真实榜分。
+**Neither extreme represents the real task.** The real hidden set lies between them: some
+molecules have library spectra (retrievable), some are analogs or entirely novel (requiring
+analog and evidence channels). **No local fold reproduces that mixture** — which is exactly why
+a real LB score is needed first.
 
-### 结论：本地折目前无法用于判断好坏，只能做回归检测
-要继续推进必须解决下面这个阻塞。
-
+### Conclusion: local folds cannot currently judge quality, only detect regressions
 
 ---
 
-## 2026-10-03 · ✅ 离线 Notebook 已在 Kaggle 真实跑通（首次端到端成功）
+## 2026-10-03 · ✅ The offline notebook ran for real on Kaggle (first end-to-end success)
 
-### 完成链路（全部真实执行，非本地模拟）
-1. 数据集创建成功：`nicholasnicklee/casmi26-assets-compact`，5 个文件
-   （structures.parquet 38.6MB + library_spectra_sorted/ 3 分区 + index）
-2. kernel push 成功，**version 3 在 Kaggle 上 RUNNING → COMPLETE**
-3. 真实挂载路径确认：**`/kaggle/input/datasets/<owner>/<slug>/`**
-   （**不是** `/kaggle/input/<slug>/`；这是第二个阻塞点，已用 glob 搜索 + 明确报错修掉）
+### The chain completed (all executed for real, not simulated locally)
+1. Dataset created: `nicholasnicklee/casmi26-assets-compact`, 5 files
+   (`structures.parquet` 38.6 MB + `library_spectra_sorted/` 3 partitions + index)
+2. `kernel push` succeeded; **version 3 went RUNNING → COMPLETE on Kaggle**
+3. Real mount path confirmed: **`/kaggle/input/datasets/<owner>/<slug>/`**
+   (**not** `/kaggle/input/<slug>/` — the second blocker, fixed with a glob search plus an
+   explicit error)
 
-### 本轮修掉的三个真实问题
-| # | 问题 | 表现 | 修复 |
+### Three real problems fixed this round
+| # | Problem | Symptom | Fix |
 |---|---|---|---|
-| 1 | metadata 文件带 BOM | `JSONDecodeError`，被 CLI 吞成不透明报错，**我上一轮误判为 403 权限不足** | 用无 BOM UTF-8 重写 |
-| 2 | 资产目录名带斜杠 | `/kaggle/temp/.kaggle/uploads/artifacts/kaggle_assets_np3_structures.parquet.json` 找不到 | 改用平铺目录名 `assets_upload/` |
-| 3 | 挂载路径假设错误 | `structures.parquet not found under /kaggle/input/casmi26-assets-compact` | 加 glob 搜索 + 打印 `os.listdir('/kaggle/input')` 的诊断 |
+| 1 | metadata file had a BOM | `JSONDecodeError`, swallowed by the CLI into an opaque error — **I misdiagnosed it as a 403 permission problem last round** | rewrote as BOM-free UTF-8 |
+| 2 | asset directory name contained a slash | `/kaggle/temp/.kaggle/uploads/artifacts/kaggle_assets_np3_structures.parquet.json` not found | switched to a flat directory name `assets_upload/` |
+| 3 | wrong mount-path assumption | `structures.parquet not found under /kaggle/input/casmi26-assets-compact` | added a glob search + a diagnostic printing `os.listdir('/kaggle/input')` |
 
-### ⛔ 当前唯一阻塞：当日提交额度已用尽（不是我用的）
+### ⛔ The only remaining blocker: the daily submission allowance was used up (not by us)
 ```
 Submission not allowed: Your team has used its daily Submission allowance (5)
 today, please try again tomorrow UTC (10 hours from now).
 ```
 
-**提交历史揭示了一个我一直不知道的重要事实**：这个账号上已有一条完整的实验流水线，
-今日 5 次额度已被它用掉，历史提交分数集中在 **0.171–0.176**：
+**The submission history revealed something I had not known**: this account already has a
+complete experimental pipeline, which consumed today's 5 submissions; its historical scores
+cluster at **0.171–0.176**:
 
-| 时间(UTC) | 描述摘要 | 分数 |
+| Time (UTC) | Description | Score |
 |---|---|---|
 | 10-03 02:02 | conditional fingerprint GAN + supervised control | 0.171 |
 | 10-03 01:47 | 0024_single_decoder_full | 0.175 |
 | 10-02 08:14 | 60K fingerprint encoder + MetFrag 2.6.11 rerank | 0.173 |
 | 10-02 07:32 | hybrid + ChEBI/LMSD candidates + diagnostic ions | **0.176** |
 
-即：**既有路线是"生成/指纹预测"，分数约 0.17**，与公开可复现基线 0.33 有明显差距。
-我这条"检索 + analog 传播"路线尚未获得榜分，额度待明日 UTC 重置。
+i.e. **the pre-existing line is "generation/fingerprint prediction", scoring ~0.17**, clearly
+below the reproducible public baseline of 0.33. Our "retrieval + analog propagation" line has
+no LB score yet; the allowance resets tomorrow UTC.
 
-### 提交命令的两个坑（已定位）
-- CLI 的 `competitions submit -k/-v` 直接调用会 400，且不打印服务端原因
-- **必须直接调 `CreateCodeSubmission`，字段用 camelCase**：
+### Two submission pitfalls (localised)
+- The CLI's `competitions submit -k/-v` returns 400 without printing the server-side reason
+- **You must call `CreateCodeSubmission` directly, with camelCase fields**:
   `fileName, competitionName, kernelOwner, kernelSlug, kernelVersion, submissionDescription`
-  （用 snake_case 会得到另一个 403 `kernelSessions.get denied`，容易误判为权限问题）
+  (snake_case yields a different 403, `kernelSessions.get denied`, easily misread as a
+  permission problem)
 
-### 待办
-- [ ] UTC 次日重置后立即提交 version 3，拿到检索路线的真实榜分
-- [ ] 与既有 0.17 流水线对比，决定是否融合
+### TODO
+- [ ] Submit version 3 immediately after the UTC reset to get the retrieval line's real score
+- [ ] Compare against the existing 0.17 pipeline and decide whether to fuse
 
 ---
 
-## 2026-10-03 · 阶段性暂停（用户决定次日再提交）
+## 2026-10-03 · Staged pause (decided to submit the next day)
 
-### 基础设施就绪状态
-| 项 | 状态 |
+### Infrastructure readiness
+| Item | Status |
 |---|---|
-| 数据集 `nicholasnicklee/casmi26-assets-compact` | ✅ 85,694,857 bytes |
-| 数据集 `nicholasnicklee/casmi26-assets-np` | ✅ 182,813,727 bytes |
-| kernel `casmi26-retrieval-analog` v3 | ✅ COMPLETE（Kaggle 上真实跑通） |
-| kernel `casmi26-retrieval-analog-np` v1 | RUNNING（推送成功） |
-| 提交脚本 `scripts/submit_kernel.py` | ✅ 已验证可正确读出服务端原因 |
+| Dataset `nicholasnicklee/casmi26-assets-compact` | ✅ 85,694,857 bytes |
+| Dataset `nicholasnicklee/casmi26-assets-np` | ✅ 182,813,727 bytes |
+| Kernel `casmi26-retrieval-analog` v3 | ✅ COMPLETE (ran for real on Kaggle) |
+| Kernel `casmi26-retrieval-analog-np` v1 | RUNNING (pushed successfully) |
+| Submission script `scripts/submit_kernel.py` | ✅ verified to surface the server-side reason |
 
-### 提交额度
-当日 5 次额度已由账号上**既有的生成式流水线**用尽（历史提交 0.171–0.176），
-UTC 重置后即可提交本检索路线。
+### Submission allowance
+Today's 5 were consumed by the account's **pre-existing generative pipeline** (historical
+scores 0.171–0.176); the retrieval line can be submitted after the UTC reset.
 
-### 本地指标（**已确认系统性高估，不可外推**）
-| 折 | 说明 | MRR@25 |
+### Local metrics (**confirmed systematically inflated, not extrapolable**)
+| Fold | Note | MRR@25 |
 |---|---|---|
-| V_A (250) | 答案在库（250/250），谱近逐字 | 1.0000 ❌ 平凡 |
-| V_C (299) | 答案在库（旧版未真排除） | 0.9799 ❌ 无效 |
-| V_A_hard (250) | 真排除答案后 | 0.0476 ❌ 不可能 |
+| V_A (250) | answers in library (250/250), spectra near-verbatim | 1.0000 ❌ trivial |
+| V_C (299) | answers in library (old version never really excluded) | 0.9799 ❌ invalid |
+| V_A_hard (250) | after genuinely excluding answers | 0.0476 ❌ impossible |
 
-**两个极端都不代表真实任务**，本地折只能做回归检测。
+**Neither extreme represents the real task**; local folds serve regression detection only.
 
-### 明日首件事
-1. 提交 kernel v3（compact 库）拿真实榜分
-2. 提交 kernel-np v1（191MB 未截断库）对比
-3. 与既有 0.17 流水线对比，决定是否融合
+### First things next day
+1. Submit kernel v3 (compact library) for a real LB score
+2. Submit kernel-np v1 (191 MB untruncated library) for comparison
+3. Compare against the existing 0.17 pipeline and decide whether to fuse
 
 ---
 
-## 2026-10-03 · 关键诊断：analog 通道的**质量窗口太窄**（下一轮的首要改进项）
+## 2026-10-03 · Key diagnosis: the analog channel's **mass window is far too narrow** (top improvement item)
 
-### 诊断方法
-在 V_A_hard（答案谱已移除，只有 analog 通道能救）上，对每个查询测量
-"与其指纹最相似的**可用**库化合物"的质量距离：
+### Method
+On V_A_hard (answer spectra removed, so only the analog channel can help), for each query we
+measured the mass distance to the most fingerprint-similar **available** library compound:
 
-| |dm| 区间 | 查询占比 |
-|---|---|---|
+| \|dm\| range | Share of queries |
+|---|---|
 | 0 – 0.5 Da | 7.6% |
 | 0.5 – 2 Da | 4.4% |
 | **2 – 10 Da** | 4.8% |
 | **10 – 50 Da** | **63.2%** |
 | 50 – 200 Da | 20.0% |
 
-- 中位 |dm| = **15.99 Da**（≈ 一个氧原子，即氧化/羟基化）
-- 25% 分位 14.02 Da（≈ 甲基化），75% 分位 42.01 Da（≈ 乙酰化）
-- 这些最近邻类似物的**指纹相似度中位 0.78**，即它们确实是好类似物
-- 而**我的 analog 扫描窗口只有 ±2 Da → 只能覆盖 17% 的查询**
+- Median \|dm\| = **15.99 Da** (≈ one oxygen: oxidation/hydroxylation)
+- 25th percentile 14.02 Da (≈ methylation), 75th percentile 42.01 Da (≈ acetylation)
+- Those nearest analogs have a **median fingerprint similarity of 0.78** — they really are good
+  analogs
+- Yet **our analog scan window is only ±2 Da → it reaches just 17% of queries**
 
-### 结论
-**`ANALOG_DM = 2.0` 是当前最大的结构性缺陷。** 天然产物的真实类似物通常是
-甲基化(+14)/氧化(+16)/乙酰化(+42)/糖基化(+162)，落在 10–50 Da，
-而我根本没去扫。这解释了 V_A_hard 只有 0.0476。
+### Conclusion
+**`ANALOG_DM = 2.0` is the largest structural defect.** Real natural-product analogs are usually
+methylated (+14) / oxidised (+16) / acetylated (+42) / glycosylated (+162), landing in
+10–50 Da — a range we never scanned. This explains V_A_hard's 0.0476.
 
-### 已做的代码改动（下一轮可直接用）
-- `score_molecule` 新增三个可调参数，便于扫参而不改常量：
-  - `analog_dm`：库谱扫描半径（analog 通道的实际触及范围）
-  - `analog_candidate_dm`：进入候选池的结构半径（可与上面不同）
-  - `analog_top_hits`：指纹门控作用在前多少个谱命中上
-- 新增 `scripts/diagnose_analog_reach.py`：量化 analog 触及范围
-- 新增 `scripts/sweep_analog_reach.py`：扫描 (analog_dm × top_hits) 组合
-  —— **本轮未跑完**（因为宽窗口下 `group_binned` 首次构建很慢，属可优化点）
+### Code changes made (usable next round)
+- `score_molecule` gained three tunable parameters so sweeps do not require editing constants:
+  - `analog_dm`: library scan radius (the analog channel's actual reach)
+  - `analog_candidate_dm`: structure radius entering the candidate pool (may differ)
+  - `analog_top_hits`: how many top spectral hits the fingerprint gate applies to
+- Added `scripts/diagnose_analog_reach.py`: quantifies the analog channel's reach
+- Added `scripts/sweep_analog_reach.py`: sweeps (analog_dm × top_hits) combinations —
+  **did not finish this round** (a wide window makes the first `group_binned` build very slow;
+  a known optimisation target)
 
-### 下一轮的第一件事（优先级重排）
-1. **提交 kernel v3 拿真实榜分**（额度 UTC 00:00 重置）—— 任何改进都需要这个锚点
-2. 提交 `casmi26-retrieval-analog-np` v1（191MB 未截断库）对比
-3. 复跑 analog 触及范围扫描，把 `ANALOG_DM` 从 2 Da 提到 20–50 Da，
-   并优化 `group_binned` 的缓存（宽窗口下是性能瓶颈）
-4. 与既有生成式流水线（历史最高 0.1760）对比，决定路线取舍
+### First things next round (re-prioritised)
+1. **Submit kernel v3 for a real LB score** (allowance resets at UTC 00:00) — every improvement
+   needs this anchor
+2. Submit `casmi26-retrieval-analog-np` v1 (191 MB untruncated library) for comparison
+3. Re-run the analog-reach sweep, raising `ANALOG_DM` from 2 Da to 20–50 Da, and optimise the
+   `group_binned` cache (the bottleneck at wide windows)
+4. Compare against the pre-existing generative pipeline (best 0.1760) and choose a direction
 
-### 冻结状态（2026-10-03 22:30 本地 / 14:30 UTC）
-| 项 | 状态 |
+### Frozen state (2026-10-03 22:30 local / 14:30 UTC)
+| Item | Status |
 |---|---|
-| 数据集 `casmi26-assets-compact` | ✅ 85,694,857 bytes |
-| 数据集 `casmi26-assets-np` | ✅ 182,813,727 bytes |
-| kernel `casmi26-retrieval-analog` | ✅ **COMPLETE**（version 3） |
-| kernel `casmi26-retrieval-analog-np` | ✅ **COMPLETE**（version 1） |
-| 所有 python 进程 | 已停止 |
-| git | 干净，无凭证入库 |
-
+| Dataset `casmi26-assets-compact` | ✅ 85,694,857 bytes |
+| Dataset `casmi26-assets-np` | ✅ 182,813,727 bytes |
+| Kernel `casmi26-retrieval-analog` | ✅ **COMPLETE** (version 3) |
+| Kernel `casmi26-retrieval-analog-np` | ✅ **COMPLETE** (version 1) |
+| All python processes | stopped |
+| git | clean, no credentials committed |
 
 ---
 
-## 2026-10-04 · 依据 PRD 补丁与 inspiration_1：候选池重建（关键突破）
+## 2026-10-04 · Candidate-pool rebuild from the PRD patch and `inspiration_1` (key breakthrough)
 
-用户提供了两份关键输入：\prd patch.md\（天然产物暗化学空间定向修正）与
-\inpiration_1.md\（两个高分方案的思路）。据此定位到**真正的瓶颈**。
+The user supplied two key inputs: `prd_patch.md` (targeted correction toward natural-product
+dark chemical space) and `inspiration_1.md` (ideas from two high-scoring solutions). These
+located the **real bottleneck**.
 
-### 诊断确证：候选池才是瓶颈，不是排序代码
-在可见 test 上（其真值可从 train 逐字谱反查，1,213/1,213 全部解析成功）测得：
-\candidate pool contains truth : 5/400 = 1.2%
+### Diagnosis confirmed: the candidate pool was the bottleneck, not the ranking code
+Measured on the visible test (whose truth can be recovered verbatim from train; all
+1,213/1,213 parsed):
+```
+candidate pool contains truth : 5/400 = 1.2%
 truth ranked #1               : 2/400 = 0.5%
 MRR@25 vs train labels        : 0.0065
-\真值结构**几乎从不进入候选池** —— 与榜分 0.130 完全一致。
+```
+The true structures **almost never entered the candidate pool** — fully consistent with the LB
+score of 0.130.
 
-### 已构建天然产物候选池（PRD 补丁 §2.1 Layer C）
-来源合并（按 InChIKey14 去重）：
+### Natural-product candidate pool built (PRD patch §2.1 Layer C)
+Sources merged (deduplicated by InChIKey14):
 
-| 来源 | 结构数 |
+| Source | Structures |
 |---|---|
 | train.parquet | 275,810 |
-| COCONUT (aidensong123 镜像) | 480,118 |
-| COCONUT 2.0 (prvsiyan 镜像) | 436,389 |
+| COCONUT (aidensong123 mirror) | 480,118 |
+| COCONUT 2.0 (prvsiyan mirror) | 436,389 |
 | LOTUS | 150,590 |
 | NPAtlas | 33,497 |
-| **合并去重后总计** | **730,161** |
+| **Merged, deduplicated** | **730,161** |
 
-产出 \data/processed/candidate_pool.parquet\（113.2 MB，含 2048 位 Morgan 指纹）。
+Produced `data/processed/candidate_pool.parquet` (113.2 MB, with 2048-bit Morgan fingerprints).
 
-### 覆盖度量化（证明改进是真实的）
-| 指标 | train-only 池 | **合并 NP 池** |
+### Coverage quantified (proving the improvement is real)
+| Metric | train-only pool | **merged NP pool** |
 |---|---|---|
-| ±40 ppm 内**零候选**的查询占比 | **8.6%** | **0.0%** |
-| 每查询候选中位数 | 15 | **127** |
-| ±40 ppm 候选密度中位数 | 49 | **204** |
+| Queries with **zero** candidates within ±40 ppm | **8.6%** | **0.0%** |
+| Median candidates per query | 15 | **127** |
+| Median ±40 ppm candidate density | 49 | **204** |
 
-天然产物专属结构（在 NP 库中但不在 train）：**454,351 个（100% 不存在于 train）**。
+NP-exclusive structures (in an NP library but not train): **454,351 (100% absent from train)**.
 
-### 下一步待办（含一个已暴露的内存缺陷）
-- \shifted_cosine\ 在 730k 候选池下尝试分配 262 MB ×10 进程 → \_ArrayMemoryError\。
-  需拆分/分块计算，或降低并发。**这是把新池接入主引擎前的必修项。**
-- 把候选池接入 notebook（\candidate_pool.parquet\ 取代 \structures.parquet\）
-- 依 inspiration：引入模拟重排训练数据、PubChem 流行度先验、置信度门控、
-  尾部保护性锁定
+### Next steps (including an exposed memory defect)
+- `shifted_cosine` tried to allocate 262 MB × 10 processes on the 730k pool → `_ArrayMemoryError`.
+  Requires chunked computation or lower concurrency. **Mandatory before wiring the new pool into
+  the main engine.**
+- Wire the pool into the notebook (`candidate_pool.parquet` replacing `structures.parquet`)
+- Per `inspiration`: introduce simulated rerank training data, a PubChem popularity prior,
+  confidence gating, and a protective tail lock
 
 ---
 
-# 2026-10-04 · 架构诊断重构（依据 suggest_for_ChatGPT.md）
+# 2026-10-04 · Architectural diagnosis rebuilt (from `suggest_for_ChatGPT.md`)
 
-## 今日提交结果
+## Today's submissions
 
-| ref | 分数 | 说明 |
+| ref | Score | Note |
 |---|---|---|
-| 56813791 | **0.096** | compact 库（94,329 化合物，每化合物截断 3 谱） |
-| 56813793 | **0.130** | full NP 库（94,329 化合物，不截断谱） |
-| 56818216 | **0.132** | 730k 天然产物池 + 分子式质量 |
-| — | **0.176** | 账号既有流水线（今日另一条路线） |
+| 56813791 | **0.096** | compact library (94,329 compounds, 3 spectra each) |
+| 56813793 | **0.130** | full NP library (94,329 compounds, untruncated spectra) |
+| 56818216 | **0.132** | 730k NP pool + formula mass |
+| — | **0.176** | the account's pre-existing pipeline (the other line today) |
 
-**我的三次提交全部低于账号既有的纯检索基线（0.140–0.162）。** 池扩容 + 分子式
-质量修复带来的 0.130 → 0.132 在噪声范围内，**不是真实改进**。
+**All three of our submissions scored below the account's existing pure-retrieval baseline
+(0.140–0.162).** The move from 0.130 to 0.132 from pool expansion + the formula-mass fix is
+within noise and **not a real improvement**.
 
-## 🔴 关键诊断：我一直在给"不可能的候选"排序
+## 🔴 Key diagnosis: we were ranking impossible candidates
 
-按 suggest 的指引，在可见 test 上用真值（可从 train 逐字反查，400/400 全部解析）实测：
+Following the guide, measured on the visible test using the truth (recoverable verbatim from
+train; all 400/400 parsed):
 
-| 检验项 | 结果 |
+| Check | Result |
 |---|---|
-| **真值结构与查询共享同一分子式** | **400/400 = 100.0%** |
-| ±40 ppm 质量窗候选数（中位） | **361** |
-| **精确分子式候选数（中位）** | **36** |
-| 质量窗候选中共享查询分子式的比例 | **仅 10.7%** |
+| **True structure shares the query's molecular formula** | **400/400 = 100.0%** |
+| ±40 ppm mass-window candidates (median) | **361** |
+| **Exact-formula candidates (median)** | **36** |
+| Share of mass-window candidates sharing the query's formula | **only 10.7%** |
 
-**结论：我 89.3% 的排序算力花在分子式根本不对的候选上 —— 它们不可能是答案。**
-真值 100% 与查询同分子式。suggest 说的"一旦分子式正确，问题就变成同分异构体的
-连接性判别"在本数据上被完全证实。
+**Conclusion: 89.3% of our ranking compute went to candidates with the wrong molecular formula
+— they cannot be the answer.** The truth shares the query's formula 100% of the time. The
+guide's claim that "once the formula is right, the problem becomes connectivity
+discrimination among isomers" is fully confirmed on this data.
 
-**这就是为什么纯检索（0.140–0.162）能打败我的"检索+analog"（0.132）**：我的 analog
-通道用 10–50 Da 外的类似物去抬升候选，把大量错误分子式的结构推进了前列。
+**This is why pure retrieval (0.140–0.162) beat our "retrieval + analog" (0.132)**: our analog
+channel used analogs from 10–50 Da away, pushing many wrong-formula structures up the ranking.
 
-## 失败的原因排序（修正后的判断）
+## Causes of failure, ranked (revised judgement)
 
-1. **没有分子式硬过滤** → 排序预算浪费 89%（最大问题）
-2. **缺少结构相关证据**（in-silico 碎片）→ 无法区分同分异构体
-3. **多引擎候选并集 + RRF** 缺失 → 单一引擎的错误无法被互补
-4. **`ANALOG_DM=2` 太窄** → 类似物触及不足（次要，且加宽反而可能加剧问题 1）
-5. **部署的库只有 94,329 化合物** → 180,606 个候选结构没有谱证据
+1. **No hard formula filter** → 89% of ranking budget wasted (the biggest problem)
+2. **No structure-aware evidence** (in-silico fragments) → cannot distinguish isomers
+3. **No multi-engine candidate union + RRF** → a single engine's errors cannot be compensated
+4. **`ANALOG_DM=2` too narrow** → insufficient analog reach (secondary, and widening it may
+   worsen problem 1)
+5. **The deployed library had only 94,329 compounds** → 180,606 candidate structures had no
+   spectral evidence
 
-## 今天做出的代码（明天可直接用）
+## Code produced today (usable tomorrow)
 
-| 文件 | 内容 | 状态 |
+| File | Content | Status |
 |---|---|---|
-| `src/casmi/fragments.py` | **通道 3：in-silico 碎片**。键断裂枚举 + 常见中性丢失 + 熵加权覆盖度打分。仅用 RDKit，离线可跑 | ✅ 自检通过 |
-| `src/casmi/pipeline_v2.py` | **v2 主流程**：分子式硬过滤 → 同分异构体小集(≈36) → 三通道路秩归一化融合 → 置信度 top-1 保护 | ✅ 自检通过 |
-| `src/casmi/core.py` | 新增 `formula_from_smiles`、`formula_neutral_mass` | ✅ |
-| `src/casmi/spectra.py` | 中性质量优先用分子式算（实测 0.57% 行 adduct 标注错误 >1000 ppm） | ✅ |
-| `scripts/build_lean_library.py` | 精简全量库：**274,935 化合物全覆盖**，113.1 MB（原 299 MB） | ✅ |
-| `scripts/verify_formula_claim.py` | 验证分子式断言的脚本 | ✅ |
-| `assets_upload_lean/` | 待上传资产（215.9 MB）：精简全量库 + 730k 池 | 待上传 |
+| `src/casmi/fragments.py` | **Channel 3: in-silico fragments.** Bond-cleavage enumeration + common neutral losses + entropy-weighted coverage scoring. RDKit only, runs offline | ✅ self-check passes |
+| `src/casmi/pipeline_v2.py` | **v2 main flow**: hard formula filter → small isomer set (≈36) → rank-normalised fusion across three channels → confidence-based top-1 protection | ✅ self-check passes |
+| `src/casmi/core.py` | Added `formula_from_smiles`, `formula_neutral_mass` | ✅ |
+| `src/casmi/spectra.py` | Prefer formula-derived neutral mass (measured: 0.57% of rows have adduct labels wrong by >1000 ppm) | ✅ |
+| `scripts/build_lean_library.py` | Slim full library: **274,935 compounds fully covered**, 113.1 MB (from 299 MB) | ✅ |
+| `scripts/verify_formula_claim.py` | Script verifying the formula claim | ✅ |
+| `assets_upload_lean/` | Assets to upload (215.9 MB): slim full library + 730k pool | pending |
 
-**v2 的关键设计**：
-- 候选集从 361 缩到 ~36（10×），同时也解决了速度问题
-- 融合用**秩归一化**而非原始分数/概率（各通道尺度不可比）
-- **top-1 保护用置信度规则**（`direct_max ≥ 0.90` 时冻结），不是硬编码答案
+**Key v2 design decisions**
+- The candidate set shrinks from 361 to ~36 (10×), which also solves the speed problem
+- Fusion uses **rank normalisation**, not raw scores/probabilities (channel scales are not
+  comparable)
+- **Top-1 protection uses a confidence rule** (`direct_max ≥ 0.90` freezes it), not hard-coded
+  answers
 
-## 明确的性能瓶颈（明天先解决）
-在 730k 池上，**v1 的 `score_molecule` 每分子耗时 >10 分钟**（候选集上万 + per-key
-分箱+tanimoto）。v2 的候选集小 10×，预计快一个数量级 —— 但要跑完 400 分子仍需优化：
-- `direct_cosines` 的 per-key 分箱需改成按分区批量（已在 v1 做过但被 730k 池压垮）
-- 碎片通道限制在同分异构体组内（≤36），必要时用多进程
-- GPU（RTX 5060, 8GB）对 RDKit 碎片无用；可用于指纹/余弦批量，但本环境
-  `casmi2026` 未装 torch（`Digital_Resin` 环境有 torch 2.15+cu130 且 sm_120 可用）
+## Clear performance bottleneck (to fix first tomorrow)
+On the 730k pool, **v1's `score_molecule` took >10 minutes per molecule** (tens of thousands of
+candidates + per-key binning and tanimoto). v2's candidate set is 10× smaller, expected to be an
+order of magnitude faster — but 400 molecules still needs optimisation:
+- `direct_cosines`' per-key binning must become per-partition batching (done in v1 but crushed
+  by the 730k pool)
+- Restrict the fragment channel to the isomer group (≤36); use multiprocessing if needed
+- The GPU (RTX 5060, 8 GB) is useless for RDKit fragments; it could batch fingerprints/cosines,
+  but this environment's `casmi2026` has no torch (the `Digital_Resin` env has torch 2.15+cu130
+  with sm_120 working)
 
-## 明天的执行顺序
-1. 跑完 v2 vs v1 的头对头对比（小样本），确认 v2 的 MRR 明显高于 0.132
-2. 上传精简全量库（113 MB，274,935 化合物全覆盖）
-3. 把 v2 接入 notebook（分子式过滤 + 碎片通道 + 秩融合 + top-1 保护）
-4. push + 提交，目标先超过账号既有的 0.176
-5. 之后再加：第二引擎候选并集 + RRF、PubChem 尾部槽位、[M+H]+ 限定
+## Execution order for tomorrow
+1. Finish the v1-vs-v2 head-to-head (small sample), confirming v2's MRR is clearly above 0.132
+2. Upload the slim full library (113 MB, 274,935 compounds fully covered)
+3. Wire v2 into the notebook (formula filter + fragment channel + rank fusion + top-1 protection)
+4. Push + submit, aiming first to beat the account's existing 0.176
+5. Then add: second-engine candidate union + RRF, PubChem tail slots, [M+H]+ restriction
 
-## 关于 top-1 硬编码（明确不采用）
-V44 notebook 内硬编码 400 个隐藏 molecule_id 的答案，可行是因为公开 test 就是隐藏集。
-**本方案采用置信度 top-1 保护替代**，既拿到同样的 MRR 保护效果，又不是记忆答案。
+## On hard-coded top-1 (explicitly rejected)
+The V44 notebook hard-codes answers for 400 hidden `molecule_id`s; that works only because the
+public test *is* the hidden set. **This project uses confidence-based top-1 protection instead**
+— the same MRR protection, without memorising answers.
 
 ---
 
-# 2026-10-05 · 现状盘定：我们已在 0.417，需要的是"跨过克隆群"
+# 2026-10-05 · Status assessment: we are at 0.417 and need to cross a clone cluster
 
-## 团队与榜单事实（本次实测，非二手）
-| 项 | 值 |
+## Team and leaderboard facts (measured this round, not second-hand)
+| Item | Value |
 |---|---|
-| 团队名 | **Spectral_Forge**（账号 nicholasnicklee / xiaoyuzhoux120 / giaok246） |
-| 当前最好 | **0.417**（ref 56839982，第 **111** 名） |
-| 第 100 名门槛 | **0.417**（并列 61 队挤在 0.417） |
-| 第 59 名 | **0.418** ← 真正要跨过的线 |
-| 第 1 名 | 0.471 |
+| Team | **Spectral_Forge** (accounts nicholasnicklee / xiaoyuzhoux120 / giaok246) |
+| Current best | **0.417** (ref 56839982, rank **111**) |
+| Rank-100 cut | **0.417** (61 teams tied at 0.417) |
+| Rank 59 | **0.418** ← the line to actually cross |
+| Rank 1 | 0.471 |
 
-| ref | 分数 | 来源 kernel |
+| ref | Score | Source kernel |
 |---|---|---|
-| 56839982 | **0.417** | `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`（V44 精确复现） |
+| 56839982 | **0.417** | `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1` (exact V44 reproduction) |
 | 56835199 | 0.413 | `giaok246/casmi26-gengsr-0-413-reproduction` |
 
-**只差约 +0.001 就能从第 111 名进入第 59 名**，所以本轮的目标不是新架构，而是
-一个**小但真实**的改进。
+**Only about +0.001 separates rank 111 from rank 59**, so this round's goal is not a new
+architecture but a **small yet real** improvement.
 
-## 关键判断：公开榜的 0.417 是一个"克隆群"
-- 拉取了 11 个公开 notebook（gengsr / lehau007 V26-V28 / nazarmohammed / haideptry /
-  seyitkaangunes / ozertuu / nursrijan / bobthebot369 / analyticaobscura）。
-- 它们全部是同一套架构：v4b 引擎 + 双 ranker 引擎 + PubChem-only 通道 + ICEBERG +
-  GLACIER([M+H]+) + RRF + 门控 PubChem 尾槽。
-- 只有 2 个 notebook 含硬编码 400 条 top-1 字典，且**两者 100% 逐字相同**。
-- ⇒ 0.417 处 61 队并列 = 同一 notebook 的众多 fork。跨过它需要的边际改进很小。
+## Key judgement: the public 0.417 is a "clone cluster"
+- Pulled 11 public notebooks (gengsr / lehau007 V26–V28 / nazarmohammed / haideptry /
+  seyitkaangunes / ozertuu / nursrijan / bobthebot369 / analyticaobscura).
+- They are all the same architecture: v4b engine + dual-ranker engine + PubChem-only channel +
+  ICEBERG + GLACIER([M+H]+) + RRF + gated PubChem tail slots.
+- Only 2 notebooks contain a hard-coded 400-entry top-1 dict, and **the two are 100% identical
+  character for character**.
+- ⇒ 61 teams tied at 0.417 = many forks of one notebook. The marginal improvement needed to
+  cross is small.
 
-## 已固化的 V44 复现产物（本地）
-| 产物 | 位置 |
+## Consolidated V44 reproduction artifacts (local)
+| Artifact | Location |
 |---|---|
-| V44 notebook 源码（转换后） | `.deepworks/tmp/v44_xyz.py`（1600 行） |
-| 内嵌引擎源码 | `.deepworks/tmp/v44_embed/{pv,pv_fp,casmi_engine,written_00}.py` |
-| 真实运行日志 | `.deepworks/tmp/v44_run.log`（7,370 s 完整 stdout） |
-| 公开数据跑出的提交 | `.deepworks/tmp/v44_submission.csv` |
-| 参数化构建器 | `scripts/build_variant_kernel.py` |
-| 推送 / 等待+提交 / 打分 | `scripts/push_kernel.py`、`scripts/wait_submit_report.py`、`scripts/score_submission.py` |
+| V44 notebook source (converted) | `.deepworks/tmp/v44_xyz.py` (1,600 lines) |
+| Embedded engine source | `.deepworks/tmp/v44_embed/{pv,pv_fp,casmi_engine,written_00}.py` |
+| Real run log | `.deepworks/tmp/v44_run.log` (full 7,370 s stdout) |
+| Submission produced on public data | `.deepworks/tmp/v44_submission.csv` |
+| Parameterised builder | `scripts/build_variant_kernel.py` |
+| Push / wait+submit / score | `scripts/push_kernel.py`, `scripts/wait_submit_report.py`, `scripts/score_submission.py` |
 
-## 🔴 纠正上一轮的两处错误记录
-1. **"可见 test 就是隐藏集"是错的。** 上一轮据 V44 硬编码字典未崩溃推断"公开 test
-   = 隐藏 test"，进而认为可以硬编码答案。本次实测：我们提交后 Kaggle 记录的提交文件
-   是 **530,716 字节**，而该 kernel 在公开数据上跑出的输出是 **393,908 字节**，
-   同一份代码不可能在同样输入上产出相差 35% 的文件 ⇒ **隐藏重跑的输入与公开 test 不同**。
-   `recover_test_truth.py` 反查出来的"真值"只对可见 test 有效，**与评分无关**。
-2. **它同时解释了 `docs/LEADERBOARD.md` 与本文档中所有以"train 反查真值"为依据的结论
-   都不可用于预测榜分**（例如"真值 100% 与查询同分子式"、"truth in pool = 1.2%"）。
-   这些数字描述的是可见 test，不是评测集。
+## 🔴 Correcting two wrong records from the previous round
+1. **"The visible test is the hidden set" is wrong.** The previous round inferred it from the
+   V44 hard-coded dict not crashing, and concluded answers could be hard-coded. Measured this
+   round: the submission file Kaggle recorded for us is **530,716 bytes**, while that kernel's
+   public-data output is **393,908 bytes**. The same code cannot produce files differing by 35%
+   on the same input ⇒ **the hidden rerun's input differs from the public test**.
+   Any "truth" recovered by `recover_test_truth.py` holds only for the visible test and is
+   **irrelevant to grading**.
+2. This also means **every conclusion in this document and in `LEADERBOARD.md` that rests on
+   "truth recovered from train" cannot predict the LB score** (e.g. "the truth shares the
+   query's formula 100% of the time", "truth in pool = 1.2%"). Those numbers describe the
+   visible test, not the evaluation set.
 
-## 本次新增的可复用工具
-| 文件 | 作用 |
+## Reusable tools added this round
+| File | Purpose |
 |---|---|
-| `scripts/recover_test_truth.py` | 从 train 逐字谱反查可见 test 真值（400/400 解析，99.7% 与母离子质量自洽） |
-| `scripts/score_submission.py` | 用评分器同款互变异构 InChIKey14 给任意提交打 MRR@25 + 名次直方图 |
+| `scripts/recover_test_truth.py` | Recover visible-test truth from verbatim train spectra (400/400 parsed, 99.7% self-consistent with precursor mass) |
+| `scripts/score_submission.py` | Score any submission with the grader's tautomer InChIKey14 → MRR@25 + rank histogram |
 
-> 这两个工具对**可见 test** 有效（例如：V44 的公开运行输出对可见 test 得 0.9902），
-> 但**不能**用来预测公开榜。用途仅限回归检测与数据理解。
+> Both are valid for the **visible test** (e.g. V44's public run output scores 0.9902 against
+> it) but **cannot** predict the public LB. Use them only for regression detection and data
+> understanding.
 
-## 从运行日志读出的真实瓶颈（下一步的抓手）
-| 现象 | 证据 | 影响 |
+## The real bottleneck read off the run log (next handhold)
+| Symptom | Evidence | Impact |
 |---|---|---|
-| **ICEBERG 只覆盖 71/400 分子** | `ICE meta {"status":"budget","n_mols_scored":71,"n_mols_covered":371}`，`ICE_BUDGET=300` | notebook 自己的文档写的是 5400。前向碎片重排是唯一"结构感知"的通道，却对 82% 的分子没跑 |
-| PubChem 通道被门控整体关闭 | `merge stats {'untouched': 400}`（lib_max ≥ 0.9 恒真） | 公开数据上是正常现象（答案在库里）；隐藏集上是否触发未知 |
-| ICE/GL 从不改变 top-1 | `changed_top1: 0`（ICE 71 分子、GL 366 分子） | 前向模型只影响第 2–25 名 → 增益天花板在尾部 |
-| 引擎自带 top-1 盾 | `eng_runner`: `score[top] = max(score) + 1.0`，`top1_locked_pair_tail: 400` | PairTail LambdaRank（0.15 权重）永远无法改动第 1 名 |
-| 运行只用 2.05 h / 9 h | 7,370 s | 有 ~7 h 算力余量可用于加通道 |
+| **ICEBERG covered only 71/400 molecules** | `ICE meta {"status":"budget","n_mols_scored":71,"n_mols_covered":371}`, `ICE_BUDGET=300` | the notebook's own docs say 5400. Forward fragment reranking is the only structure-aware channel, yet it never ran for 82% of molecules |
+| The PubChem channel was gated off entirely | `merge stats {'untouched': 400}` (`lib_max ≥ 0.9` always true) | normal on public data (answers are in the library); unknown whether it triggers on the hidden set |
+| ICE/GL never change top-1 | `changed_top1: 0` (ICE 71 molecules, GL 366) | the forward models only affect ranks 2–25 → the ceiling is in the tail |
+| The engine ships a top-1 shield | `eng_runner`: `score[top] = max(score) + 1.0`, `top1_locked_pair_tail: 400` | PairTail LambdaRank (weight 0.15) can never change rank 1 |
+| The run used only 2.05 h of 9 h | 7,370 s | ~7 h of compute headroom for more channels |
 
-## 本轮实验设计（消融，一次只动一个变量）
-每个变体作为一个 kernel 版本推送（推送即触发一次公开数据批量运行），运行完成后才能
-提交（`Notebook is still running` 会被拒），提交本身再触发一次隐藏重跑。因此每个变体
-约 2 h + 2.5 h，**且每账号同时只能有 2 个 GPU 会话** → 必须精挑变体。
+## This round's experiment design (ablation, one variable at a time)
+Each variant is pushed as a kernel version (pushing triggers a public-data batch run); a
+submission is only accepted once that run finishes (`Notebook is still running` is rejected),
+and the submission itself triggers a hidden rerun. So each variant costs ~2 h + ~2.5 h, **and
+each account may hold only 2 GPU sessions at once** → variants must be chosen carefully.
 
-| 版本 | 变体 | 改动 | 假设 |
+| Version | Variant | Change | Hypothesis |
 |---|---|---|---|
-| v1 | `ctl` | 与 V44 逐字相同 | 测**运行间方差**（没有它任何 delta 都不可解释） |
-| v2 | `nolock` | 删除 champion top-1 锁 | 该字典键是可见 test 的 molecule_id；若隐藏集不同则该单元 KeyError，notebook 在最终校验前就死掉 |
-| v3 | `icefull` | `ICE_BUDGET 300 → 3000` | 让前向碎片重排覆盖全部 371 个有候选的分子 |
-| v4 | `unlock_engine` | 去掉引擎 top-1 盾，`pair_weight 0.15 → 0.35` | 让 PairTail LambdaRank 能改动第 1 名 |
-| v5 | `pc_aggressive` | PubChem 尾槽加倍，`REL_TH 600 → 200` | 尾部塞入更多"池外"候选 |
+| v1 | `ctl` | verbatim V44 | measures **run-to-run variance** (without it no delta is interpretable) |
+| v2 | `nolock` | remove the champion top-1 lock | its dict keys are the visible test's molecule_ids; if the hidden set differs, that cell raises KeyError and the notebook dies before final validation |
+| v3 | `icefull` | `ICE_BUDGET 300 → 3000` | let forward fragment reranking cover all 371 molecules with candidates |
+| v4 | `unlock_engine` | remove the engine's top-1 shield, `pair_weight 0.15 → 0.35` | let PairTail LambdaRank change rank 1 |
+| v5 | `pc_aggressive` | double the PubChem tail slots, `REL_TH 600 → 200` | push more out-of-pool candidates into the tail |
 
-**判定规则**：只有 **> ctl ± 0.001** 的差异才当作信号（提交是确定性的，同分同稿同分，
-所以同一次实验内的 delta 可信；跨模型差异才受 ±0.006 噪声限制）。
+**Decision rule**: only differences **> ctl ± 0.001** count as signal (submissions are
+deterministic — same file, same score — so deltas within one experiment are trustworthy; only
+cross-model differences are subject to ±0.006 noise).
 
 ---
 
-# 2026-10-05（续）· 指标算术纠错 + CLAW 提升规则移植
+# 2026-10-05 (continued) · Metric arithmetic correction + CLAW promotion port
 
-## ⚠️ 纠错：头/尾的贡献划分（我此前算错了）
+## ⚠️ Correction: the head/tail split (I had computed it wrong)
 
-上一节我写过"第 2–25 名的上限 = $(H_{25}-1)/400 = 0.00704$"。**这是错的**——那是
-"每个名次恰好放一个分子"的算法，不是上限。
+Earlier I wrote "the ceiling of ranks 2–25 is $(H_{25}-1)/400 = 0.00704$". **That is wrong** —
+it is the "one molecule per rank" arithmetic, not a ceiling.
 
-- **正确上限**：若 400 个分子的真值**全部**排第 2 名 →
-  $400\times\frac12/400 = \mathbf{0.5}$。尾部不是天花板。
-- 反推头部比例 $p$：$p=0.30$ 时尾部需贡献 0.117（平均第 6 名，合理）；
-  $p=0.40$ 时尾部只剩 0.028（平均第 35 名，即大多数分子没进前 25，不合理）。
-- ⇒ **$p\approx0.30\text{–}0.35$；头部 ≈0.30–0.35，尾部 ≈0.07–0.12，两者同量级。**
+- **Correct ceiling**: if all 400 molecules' truths ranked 2nd →
+  $400\times\frac12/400 = \mathbf{0.5}$. The tail is not the ceiling.
+- Back-solving the head share $p$: at $p=0.30$ the tail must contribute 0.117 (average rank 6,
+  plausible); at $p=0.40$ the tail has only 0.028 (average rank 35 — i.e. most molecules outside
+  the top 25, implausible).
+- ⇒ **$p\approx0.30$–$0.35$; head ≈0.30–0.35, tail ≈0.07–0.12 — the same order of magnitude.**
 
-**与公开账本自洽**：`ICE_LAM=GL_LAM=1.0` 是纯尾部改动（ICE/GL 从不改 top-1），
-公开记录 +0.007 —— 相当于尾部约 0.1 里被前向重排吃掉约 10%。
+**Consistent with the public ledger**: `ICE_LAM=GL_LAM=1.0` is a pure tail change (ICE/GL never
+alter top-1) and the public record shows +0.007 — about 10% of a ~0.1 tail eaten by forward
+reranking.
 
-**跨线的等价条件**（任一即可）：多 1 个分子进 rank 1（+0.0025）；或约 4 个分子
-从第 5 提到第 3（每个 +0.00067）；或约 10 个分子从第 10 提到第 5。
+**Equivalent conditions for crossing** (any one suffices): one more molecule to rank 1
+(+0.0025); or ~4 molecules moving from rank 5 to rank 3 (+0.00067 each); or ~10 molecules from
+rank 10 to rank 5.
 
-## 🔑 CLAW Promotion Rule：全领域唯一能改动 rank 1 的机制，我们此前完全没有
+## 🔑 CLAW Promotion Rule: the only mechanism in the field that can change rank 1, which we lacked entirely
 
-来源 `bobthebot369/enveda-casmi-2026-v17-zenith-apex`（其 `CFG.update` 写着
-`VERSION: 'v27-zenith-apex-0417'`，即 `lehau007` 那个 LB 0.417 的发布）。
+Source: `bobthebot369/enveda-casmi-2026-v17-zenith-apex` (its `CFG.update` says
+`VERSION: 'v27-zenith-apex-0417'`, i.e. the `lehau007` release that scores LB 0.417).
 
 ```python
 def promote(base, base_keys, pc, pc_keys, slots, n=25):
     usual = merge(base, base_keys, pc, pc_keys, slots, n=n)
     if not pc: return usual
     top = pc[0]
-    return ([top] + [x for x in usual if x != top])[:n]      # 只有 rank 1 换人，其余保持槽位
+    return ([top] + [x for x in usual if x != top])[:n]      # only rank 1 changes; other slots hold
 
-if USE_PROMOTION and S > S_TAU(6.0) and pop_top >= POP_TAU(5.0):   # 在 lib_max < LIB_TAU 分支内
+if USE_PROMOTION and S > S_TAU(6.0) and pop_top >= POP_TAU(5.0):   # inside the lib_max < LIB_TAU branch
     final = promote(...)
 ```
 
-| 门控量 | 定义 | 含义 |
+| Gate quantity | Definition | Meaning |
 |---|---|---|
-| `S` | `z(f.z) + POP_LAM·pop` 在**自身 ±10 ppm 质量窗内** | `>6.0` = 整个质量窗里的 **6σ 离群点** |
-| `pop_top` | `log1p(SID) + log1p(PMID)` | `≥5` = 真实存在且被大量文献记录 |
+| `S` | `z(f.z) + POP_LAM·pop` within the query's **own ±10 ppm window** | `>6.0` = a **6σ outlier** in the whole window |
+| `pop_top` | `log1p(SID) + log1p(PMID)` | `≥5` = genuinely exists and is heavily documented |
 
-**盈亏平衡**：PubChem 候选从第 2 槽提到 rank 1，对了 +0.5 / 错了 −0.5，**50% 精度处 EV 中性**；
-从第 4 槽提则为 43%。收益全部来自"只在极端离群时动手"。
+**Break-even**: promoting a PubChem candidate from slot 2 to rank 1 gains +0.5 if right and
+loses −0.5 if wrong → **EV-neutral at 50% precision**; from slot 4 it is 43%. All the value comes
+from acting **only on extreme outliers**.
 
-**我们缺的是两半代码**：V44 的 PubChem 探针是未打补丁的 v16（不产出 `S`/`top_pop`/`fz_top`）、
-runner 把这三量丢掉、merge 无 promotion 分支；而 `casmi26-pubchem-popularity-prior`
-**已挂载**、`CASMI_POP_DIR/LAM/UNION` **已写进环境变量**却无人读取。
+**We were missing two halves of the code**: V44's PubChem probe is an unpatched v16 (it does not
+produce `S`/`top_pop`/`fz_top`), the runner discarded those three quantities, and the merge had no
+promotion branch — while `casmi26-pubchem-popularity-prior` **was already mounted** and
+`CASMI_POP_DIR/LAM/UNION` **were already in the environment** with nobody reading them.
 
-**移植方式**：整段从 v17 **复制**（`scripts/freeze_claw_patch.py` 冻结成
-`notebooks/v45/_claw_patch.py`），不是重打。补丁重定义 `init_worker`/`probe_one`，
-追加到 CORE 末尾即生效（组装后 9,689 字符，两个 `probe_one` 定义，后者覆盖前者）。
+**How it was ported**: the whole block was **copied** from v17 (`scripts/freeze_claw_patch.py`
+freezes it into `notebooks/v45/_claw_patch.py`), not re-implemented. The patch redefines
+`init_worker`/`probe_one`; appending it to the end of CORE is enough (9,689 characters after
+assembly; two `probe_one` definitions, the latter overriding the former).
 
-**已做的验证**（都在本地、无 GPU 消耗）：
-| 检查 | 结果 |
+**Verification performed** (all local, zero GPU):
+| Check | Result |
 |---|---|
-| `scripts/check_variant_kernels.py` | 逐 cell 编译；对 CLAW 变体**真正按 notebook 方式重新拼装 CORE 再编译** ✅ |
-| `scripts/test_claw_port.py` | 从**生成的 notebook** 取出 `merge`/`promote` 执行，断言 slot 语义 + 门控结构 ✅ |
-| 阶段 C 是否会把提升撤掉 | 读 v17 stage C 与我们的 cell 21 逐行对照：结构等价，提升在 RRF 后仍居首（1/4=0.25 > 引擎 rank1 的 0.6/4=0.15），仅在"某候选同时出现在两表"时可能被顶掉——v17 亦然 ✅ |
+| `scripts/check_variant_kernels.py` | compiles every cell; for CLAW variants it **really reassembles CORE the way the notebook does, then compiles it** ✅ |
+| `scripts/test_claw_port.py` | extracts `merge`/`promote` **from the generated notebook** and executes them; asserts slot semantics + gate structure ✅ |
+| Does stage C undo the promotion? | read v17's stage C against our cell 21 line by line: structurally equivalent; the promotion still leads after RRF (1/4=0.25 > the engine rank-1's 0.6/4=0.15), and could only be displaced if a candidate appears in both tables — as in v17 ✅ |
 
-移植过程中我引入并修掉一个真 bug：把单引号塞进了单引号字符串字面量（cell 9 的 RUNNER
-是 `'...'`），导致 `invalid syntax`。现在 `claw_patch()` 会断言补丁内不含三引号与反斜杠。
+During the port I introduced and fixed a real bug: an unescaped single quote inside a
+single-quoted string literal (cell 9's RUNNER is `'...'`), causing `invalid syntax`.
+`claw_patch()` now asserts the patch contains no triple quotes or backslashes.
 
-## 公开账本（从 notebook header 抄出，用于判断每个杠杆的量级）
+## Public ledger (transcribed from notebook headers, to size each lever)
 
-| 杠杆 | ΔLB |
+| Lever | ΔLB |
 |---|---|
-| `fpnet_full1`（重训 FPNet） | +0.013 |
-| 双引擎融合 + 二次前向重排 | +0.014 |
+| `fpnet_full1` (retrained FPNet) | +0.013 |
+| Dual-engine fusion + second forward rerank | +0.014 |
 | `ICE_LAM=GL_LAM=1.0` | +0.007 |
-| GLACIER `[M+H]+` 过滤 | +0.004 |
-| 流行度先验 μ=0.15 | +0.002 |
-| **CLAW Promotion** | 声称 +0.024 ~ +0.043（0.413→0.417 的实际台阶约合 **+0.004**） |
+| GLACIER `[M+H]+` filter | +0.004 |
+| Popularity prior μ=0.15 | +0.002 |
+| **CLAW Promotion** | claimed +0.024 ~ +0.043 (the actual 0.413→0.417 step is ≈ **+0.004**) |
 
-nazarmohammed header 里明列的后续方向：`POOLPOP_MU 0.15→0.30`（+0.003~0.005）、
-`POP_UNION 200→500`、`GL_BUDGET 4000→6000`、启用 FIORA、自训 FPNet（+0.005~0.010）。
+Directions nazarmohammed's header lists next: `POOLPOP_MU 0.15→0.30` (+0.003~0.005),
+`POP_UNION 200→500`, `GL_BUDGET 4000→6000`, enabling FIORA, self-training FPNet (+0.005~0.010).
 
-## 变体队列（已构建并通过编译/拼装检查）
+## Variant queue (built, passing compile/assembly checks)
 
-| 变体 | 杠杆类型 | 状态 |
+| Variant | Lever type | Status |
 |---|---|---|
-| `ctl` / `nolock` | 对照 / 诊断 | **已在 Kaggle 运行中**（kernel v1 / v2） |
-| `claw` | **rank 1** | 待推送（GPU 会话槽位满） |
-| `pop30` | rank 1（重排 BASE） | 待推送 |
-| `unlock_engine` | rank 1（解开引擎 top-1 盾） | 待推送 |
-| `icefull` | 尾部（ICE 覆盖 71→371 分子） | 待推送 |
-| `topn120` / `pc_aggressive` / `combo_a` / `combo_b` | 尾部 | 待推送 |
+| `ctl` / `nolock` | control / diagnostic | **running on Kaggle** (kernel v1 / v2) |
+| `claw` | **rank 1** | queued (GPU session slots full) |
+| `pop30` | rank 1 (reranks BASE) | queued |
+| `unlock_engine` | rank 1 (lifts the engine top-1 shield) | queued |
+| `icefull` | tail (ICE coverage 71→371 molecules) | queued |
+| `topn120` / `pc_aggressive` / `combo_a` / `combo_b` | tail | queued |
 
-## ⛔ 未解的关键未知数（下一轮第一件事）
+## ⛔ Unresolved key unknown (first thing next round)
 
-CLAW 的门控整段位于 `lib_max < LIB_TAU(0.9)` 分支**内部**。公开数据运行日志是
-`merge stats {'untouched': 400}`——通道被整体关死。V44 代码注释还写着
-*"V43's lib_max was 1.0 for every hidden query"*。**若隐藏集也如此，CLAW 永不触发、
-PubChem 通道 2,674 秒计算全废。**
+CLAW's whole gate sits **inside** the `lib_max < LIB_TAU(0.9)` branch. The public-data run log
+says `merge stats {'untouched': 400}` — the channel is gated off entirely. V44's code comment
+even says *"V43's lib_max was 1.0 for every hidden query"*. **If the hidden set behaves the same,
+CLAW never fires and the PubChem channel's 2,674 seconds of compute are wasted.**
 
-要判它，只能读**隐藏重跑**的日志：提交后 `kernels/output` 返回的 log 是否就是那次
-重跑（而非公开数据批量运行）——若是，可直接读出 `merge stats` 的
-`promoted / aggressive / gentle / untouched` 与 `lib_max` 分布。这是下一轮第一步。
+The only way to settle it is to read the **hidden rerun**'s log: whether the log returned by
+`kernels/output` after a submission is that rerun (rather than the public batch run) — if so, the
+`promoted / aggressive / gentle / untouched` counts and the `lib_max` distribution are directly
+readable. That was the first item of the next round.
 
-## 工具新增
+## New tools
 
-| 文件 | 用途 |
+| File | Purpose |
 |---|---|
-| `scripts/ablation_report.py` | 拉取所有 `V45*` 提交，按分数排表并给出相对 ctl 的 delta |
-| `scripts/test_claw_port.py` | CLAW 移植自检（从生成的 notebook 取函数执行） |
-| `scripts/check_variant_kernels.py` | 变体 notebook 的编译 + 组装检查 |
-| `scripts/queue_variant.py` | 排队一个变体：等空闲 GPU 会话 → 推送 → 等运行 → 提交 → 回报分数 |
+| `scripts/ablation_report.py` | fetch all `V45*` submissions, tabulate by score, show deltas vs ctl |
+| `scripts/test_claw_port.py` | CLAW port self-check (extracts and executes functions from the generated notebook) |
+| `scripts/check_variant_kernels.py` | variant notebook compile + assembly checks |
+| `scripts/queue_variant.py` | queue a variant: wait for a free GPU session → push → wait → submit → report the score |
 
-## 提交字节数普查（23 次提交，全部是隐藏集上的输出）
+## Submission byte-size survey (23 submissions, all outputs on the hidden set)
 
-| 类别 | 字节数范围 | 说明 |
+| Category | Byte range | Note |
 |---|---|---|
-| 生成式路线（9/25–10/3） | 535 KB – 572 KB | 20 次提交，极稳定在 57.1 B/候选 |
-| 本路线检索（10/4） | 465 – 543 KB | |
-| **V44 复现（10/5, 0.417）** | **530,716** | |
-| gengsr 复现（10/4, 0.413） | 532,444 | 另一个 notebook、同一个隐藏集 → 与上面几乎同尺寸 |
-| 早期两次（9/24–25） | 295 KB | 候选填得少 |
+| Generative line (9/25–10/3) | 535 KB – 572 KB | 20 submissions, extremely stable at 57.1 B/candidate |
+| Our retrieval line (10/4) | 465 – 543 KB | |
+| **V44 reproduction (10/5, 0.417)** | **530,716** | |
+| gengsr reproduction (10/4, 0.413) | 532,444 | a different notebook, the same hidden set → almost the same size |
+| Two early ones (9/24–25) | 295 KB | few candidates filled |
 
-**用途**：这是一条独立的"隐藏集确实不是可见 test"的旁证链——两个**不同**的 notebook
-在隐藏集上都产出 ~530 KB，而 V44 在**可见 test** 上跑出的输出只有 393,908 字节（39.4 B/候选）。
-不过**真正定案的证据是分数**：那份可见 test 输出对反查真值得 0.9902；若隐藏集就是可见 test
-且答案键是 train 标签，这次提交该拿 ~1.0，实际是 0.417。**结论已由分数定案，字节数只是旁证。**
+**Use**: this is an independent corroboration that the hidden set really is not the visible test
+— two **different** notebooks both produce ~530 KB on the hidden set, while V44 on the **visible
+test** produces only 393,908 bytes (39.4 B/candidate). But **the real proof is the score**: that
+visible-test output scores 0.9902 against the recovered truth; if the hidden set *were* the
+visible test with train labels as the answer key, this submission would have scored ~1.0, but it
+scored 0.417. **The score already settles it; the byte counts are only corroboration.**
 
-## 决策：不再单独提交 `ctl` 对照
+## Decision: do not submit `ctl` as a separate control
 
-理由：
-1. **复现确定性已有旁证**：gengsr 的 notebook header 自报 0.413，我们独立复现得到 **0.413**，
-   逐位一致；作者那份与 ctl **逐字相同**的 V44 代码拿到 0.417，因此作者那次就是有效对照。
-2. **`nolock` 本身就是近似对照**：它与 ctl 只差 champion 锁那一个 cell。若锁是惰性的
-   （崩溃或被跳过），nolock 必须回到 0.417 —— 这同时给出方差估计与锁的诊断。
-3. GPU 会话槽位才是真正的瓶颈（每账号同时 2 个），省下的槽位用于能改分数的变体。
+Reasons:
+1. **Determinism is already corroborated**: gengsr's notebook header claims 0.413 and we
+   independently reproduced **0.413**, digit for digit; the author's V44 code, **character for
+   character identical** to ctl, scored 0.417 — so the author's run *is* a valid control.
+2. **`nolock` is itself an approximate control**: it differs from ctl by the one champion-lock
+   cell. If the lock is inert (crash or skip), nolock must return to 0.417 — which yields both a
+   variance estimate and a lock diagnostic.
+3. GPU session slots are the real bottleneck (2 per account); spare slots go to variants that can
+   change the score.
 
-⇒ 今日提交配额规划：`nolock` + `claw`，留 2–3 次给当轮胜出者的组合。
-（其后 `nolock` 也被撤销：§「champion 锁定案」证明它只会重复 0.417。）
+⇒ Today's submission plan: `nolock` + `claw`, keeping 2–3 for combinations of the round's winner.
+(`nolock` was subsequently cancelled too: the "champion lock settled" section proves it would only
+reproduce 0.417.)
 
-## 关于目标里的「必须同时记录 V-A/V-C」——为什么本轮没有 V-A/V-C 数字
+## On the goal's "must record V-A/V-C" — why there are no V-A/V-C numbers this round
 
-这一条必须如实说明，不能用别的数字顶替：
+This must be stated honestly, not substituted with other numbers:
 
-1. **V-A / V-C 是为我们自己那条流水线（`src/casmi/folds_fast.py`）建的三段式折**，
-   指标定义在 `src/casmi/core.py`。本轮工作的对象是**公开 notebook 血统（V44 / v17）**，
-   它是另一套代码与另一套资产，**不吃我们的 fold**，所以 V-A/V-C 对它没有定义。
-2. 已有的 V-A/V-C 数字**本身也已被判定不可用**：V-A 的答案 250/250 都在库内（平凡，MRR 1.0000）；
-   修好"答案未真排除"的 bug 后 V-A_hard 掉到 0.0476（不可能）；V-C 的旧数字是在 bug 未修时测的。
-3. 更根本的是**可见 test 是诱饵**（本轮定案）：任何以"train 反查真值"为依据的本地数字
-   （包括那份 0.9902）**都只描述诱饵，不能预测榜分**。
+1. **V-A / V-C are the three-fold split built for our own pipeline**
+   (`src/casmi/folds_fast.py`), with the metric defined in `src/casmi/core.py`. This round's work
+   targets the **public notebook lineage (V44 / v17)**, which is a different codebase with
+   different assets, **does not consume our folds**, so V-A/V-C are undefined for it.
+2. The existing V-A/V-C numbers **are themselves already judged unusable**: V-A's answers are
+   250/250 in the library (trivial, MRR 1.0000); after fixing the "answers not really excluded"
+   bug V_A_hard fell to 0.0476 (impossible); V-C's old number was measured with the bug unfixed.
+3. More fundamentally, **the visible test is a decoy** (settled this round): any local number
+   resting on "truth recovered from train" (including that 0.9902) **describes only the decoy and
+   cannot predict the LB score**.
 
-**因此本轮唯一可信的度量就是公开榜分数 + 提交 ref**，已逐条记录。若要恢复本地折，
-需要重建"结构+谱+碎片+指纹"四件套的池资产来构造不泄漏的留出集——成本高，且目前
-**没有证据表明它比榜分更有信息量**（榜分对确定性变体是无噪声的）。
+**So the only trustworthy measure this round is the public LB score plus the submission ref**,
+recorded entry by entry. Restoring local folds would require rebuilding the "structures + spectra
++ fragments + fingerprints" pool assets to construct a non-leaking hold-out — expensive, and
+there is currently **no evidence it carries more information than the LB score** (which is
+noise-free for deterministic variants).
 
-### 2026-10-05 更新：折的**定义**已经建好，但数字仍缺
+### 2026-10-05 update: the fold **definition** now exists, but the numbers are still missing
 
-上面那段写的时候折还不存在。现在 `scripts/build_leakfree_folds.py` 已经从 `train.parquet`
-建出**结构不相交 + 按来源分档**的折（`data/processed/folds.parquet`，275,810 结构 / 5 折），
-并断言了三条不变量。所以"V-A/V-C 对本轮血统不适用"应更正为：
+The paragraph above was written before the folds existed. `scripts/build_leakfree_folds.py` has
+since built **structure-disjoint, source-stratified** folds from `train.parquet`
+(`data/processed/folds.parquet`, 275,810 structures / 5 folds) with three asserted invariants. So
+"V-A/V-C do not apply to this lineage" should be corrected to:
 
-| 项 | 状态 |
+| Item | Status |
 |---|---|
-| 折定义（结构不相交 / 按来源分档） | ✅ 已建好并断言 |
-| V44 血统在这套折上的数字 | ❌ **仍缺**——需要跑一次"无泄漏回测"（把留出分子的结构与谱一并从池和库剔除） |
+| Fold definition (structure-disjoint / source-stratified) | ✅ built and asserted |
+| Numbers for the V44 lineage on these folds | ❌ **still missing** — requires one "leak-free backtest" run (removing held-out structures and spectra from both the pool and the library) |
 
-**并且要先接受一个量化限制**（见 `PLAYBOOK.md` §10）：最像隐藏集化学的 `enveda-np-examples`
-档**只有 250 个结构**，每折 50 个查询 ⇒ 标准误 ≈ ±0.057，比要找的 +0.002 大 28 倍。
-可用的只有 `other` 档（~9,500/折，±0.004），所以这套折**只能当筛子，不能当本地榜分替代品**。
+**And a quantitative limit must be accepted first** (see `PLAYBOOK.md` §10): the
+`enveda-np-examples` stratum — the one most like the hidden set's chemistry — has **only 250
+structures**, i.e. 50 queries per fold ⇒ a standard error of ≈ ±0.057, **28× larger than the
++0.002 we are hunting**. Only the `other` stratum is usable (~9,500/fold, ±0.004), so these folds
+are **a sieve, not a local LB substitute**.
 
-## 今日提交台账（含 ref，随实验更新）
+## Today's submission ledger (with refs, updated as experiments run)
 
-| 变体 | kernel slug | ref | 榜分 | 备注 |
+| Variant | Kernel slug | ref | LB score | Note |
 |---|---|---|---|---|
-| （基线）V44 精确复现 | `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1` | 56839982 | **0.417** | 第 111 名；champion 锁未生效（定案） |
-| gengsr 复现 | `giaok246/casmi26-gengsr-0-413-reproduction` | 56835199 | 0.413 | 与作者自报 0.413 逐位一致 ⇒ 复现确定性 |
-| `claw` | `…-v45-claw` | 待定 | 待定 | 排队中 |
-| `icefull` | `…-v45-icefull` | 待定 | 待定 | 排队中 |
-| `pop30` | `…-v45-pop30` | 待定 | 待定 | 排队中 |
+| (baseline) exact V44 reproduction | `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1` | 56839982 | **0.417** | rank 111; champion lock never fired (settled) |
+| gengsr reproduction | `giaok246/casmi26-gengsr-0-413-reproduction` | 56835199 | 0.413 | matches the author's 0.413 digit for digit ⇒ reproduction is deterministic |
+| `claw` | `…-v45-claw` | pending | pending | queued |
+| `icefull` | `…-v45-icefull` | held | — | queue cancelled |
+| `pop30` | `…-v45-pop30` | held | — | queue cancelled |
 
 ---
 
-# 2026-10-05（第三段）· 三项测量把方向掰正了
+# 2026-10-05 (third segment) · Three measurements that turned the direction around
 
-这一段**没有产生新的榜分**（三个变体还在排队等 GPU），但产出了三条会改变后续所有决策的测量。
-原始记录与运行细节见 `docs/PLAYBOOK.md`，这里只留结论与证据。
+This segment **produced no new LB score** (the three variants were still queued for GPU) but
+yielded three measurements that change every subsequent decision. Raw records and run details are
+in `docs/PLAYBOOK.md`; only conclusions and evidence are kept here.
 
-## 测量 1：公开前沿恰好就是 0.417
+## Measurement 1: the public frontier is exactly 0.417
 
-扫了该竞赛**全部 250 个公开 notebook** 的标题/副标题，找任何自报 ≥ 0.418 的：**一个都没有**。
-公开最高是 `lehau007/casmi26-sota-v27-zenith-apex-0417` 的 0.417 —— 也就是我们所在的位置。
-**排在 0.418–0.471 的 59 支队一份公开代码都没放。**
+Scanned the titles/subtitles of **all 250 public notebooks** in this competition for anything
+claiming ≥ 0.418: **not one**. The public best is `lehau007/casmi26-sota-v27-zenith-apex-0417` at
+0.417 — precisely where we are. **The 59 teams between 0.418 and 0.471 have released no public
+code.**
 
-配合另一条更硬的证据：v17/v27（带 CLAW、带 popularity 补丁、ICE 预算 5400）与我们的 V44
-（无 CLAW、无补丁、ICE 300）**同为 0.417** ⇒ 公开设计空间已在 0.417 附近饱和。
+Combined with harder evidence: v17/v27 (with CLAW, with the popularity patch, ICE budget 5400)
+and our V44 (no CLAW, no patch, ICE 300) **both score 0.417** ⇒ the public design space is
+saturated near 0.417.
 
-**结论**：靠"抄公开实现"无法越线；队列里的公开空间旋钮是廉价彩票，不应指望它们跨线。
+**Conclusion**: copying public implementations cannot cross the line; the public-space knobs in
+our queue are cheap lottery tickets and should not be expected to do it.
 
-## 测量 2：0.417 可以拆成"召回 × 排序"，召回约 0.545
+## Measurement 2: 0.417 decomposes into recall × ranking, and recall is about 0.545
 
-在公开 ranker 训练行（`prvsiyan/casmi26-ranker-features`，CC0）上做**按查询分组**的 5 折 CV
-（`scripts/train_ranker_probe.py`，纯本地 CPU）：
+Grouped 5-fold CV on the public ranker's training rows (`prvsiyan/casmi26-ranker-features`, CC0)
+via `scripts/train_ranker_probe.py`, pure local CPU:
 
 ```
 rows=142,762 features=31 groups=819 positives=1,638
-groups containing >=1 positive: 819/819 = 100.0%   <- 这份模拟数据把召回设成了 1.0
+groups containing >=1 positive: 819/819 = 100.0%   <- this simulated data sets recall to 1.0
 group-wise CV:  MRR@25 = 0.7649   top-1 = 0.6886   hit@25 = 0.9512
 ```
 
-召回满分时排序只能拿 0.765，而真实榜分 0.417 ⇒ 反解 **recall@25 ≈ 0.545**，
-即**约 45% 的隐藏分子，真值根本进不了前 25**。
+With recall maxed out, ranking only reaches 0.765; the real score is 0.417 ⇒ back-solving gives
+**recall@25 ≈ 0.545**, i.e. **about 45% of hidden molecules never get their truth into the top 25**.
 
-**这修正了我此前的一个偏斜**：我按"头部占 0.30–0.35"一路只盯 rank 1，那只覆盖了排序这一半；
-**召回这一半（约 0.19 的分）此前从未被当成独立目标**。
+**This corrected a bias of mine**: following "the head is 0.30–0.35" I had fixated on rank 1,
+which covers only the ranking half; **the recall half (~0.19 of the score) had never been treated
+as an independent target**.
 
-⚠️ 局限已标注：0.765 来自模拟行、整份数据召回被设为 1.0，所以 0.545 是**软估计**，
-只是工作假设。领域里也有人明确警告过这类模拟会高估真实新颖分子的回收率。
+⚠️ Limitation flagged: 0.765 comes from simulated rows with recall set to 1.0 throughout, so 0.545
+is a **soft estimate**, a working hypothesis only. Others in the field have explicitly warned that
+such simulations overestimate recovery of genuinely novel molecules.
 
-## 测量 3：候选池扩容这条召回通道被实测关闭
+## Measurement 3: the pool-expansion recall route is closed by measurement
 
 ```
 pool structures                       : 730,161
 lotus/npatlas AND NOT coconut/train   :     373   (0.051% of pool)
 ```
 
-LOTUS ∪ NPAtlas 相对 train ∪ COCONUT 只多 **373 个结构**，而公开池本来就比我们的合并池大。
-⇒ 不是"收益不确定"，是**上限 0.05%**。
+LOTUS ∪ NPAtlas adds only **373 structures** over train ∪ COCONUT, and the public pool is already
+larger than our merged one. ⇒ This is not "uncertain benefit", it is a **ceiling of 0.05%**.
 
-**两条合起来** ⇒ 唯一还能扩召回的通道是 **PubChem tier**（7.2 GB，规模是池的 ~100 倍），
-而它现在只被允许占 5 个尾槽。这第一次给"PubChem 该占多大份额"提供了定量理由。
+**Together** ⇒ the only remaining channel that can expand recall is the **PubChem tier** (7.2 GB,
+~100× the pool), which is currently allowed only 5 tail slots. This is the first quantitative
+argument for how large a share PubChem should get.
 
-## 因此的队列与预注册预测
+## The resulting queue and pre-registered predictions
 
-| 变体 | 预测 | 0 结果的两种含义（靠诊断区分） |
+| Variant | Prediction | Two meanings of a zero result (distinguished by diagnostics) |
 |---|---|---|
-| `claw` | +0.000 ~ +0.005 | `promoted==0` ⇒ 门控太严，没测到；`promoted>>0` 且不动 ⇒ 机制无效 |
-| `icefull` | 0.000 ± 0.002 | ICE 真无贡献 vs ICE 静默超时降级（日志有 `ICE FAILED`） |
-| `pop30` | +0.000 ~ +0.004 | 先验无区分度 vs 先验被 `except: pass` 静默禁用（已加打印） |
+| `claw` | +0.000 ~ +0.005 | `promoted==0` ⇒ gate too strict, never tested; `promoted>>0` with no movement ⇒ the mechanism is inert |
+| `icefull` | 0.000 ± 0.002 | ICE genuinely contributes nothing vs ICE silently timing out (the log has `ICE FAILED`) |
+| `pop30` | +0.000 ~ +0.004 | the prior has no discriminative power vs the prior being silently disabled by `except: pass` (printing added) |
 
-**本段三个实验的设计目标不是提高命中率，而是保证无论结果如何都能得出结论。**
+**The design goal of these three experiments is not to raise the hit rate but to guarantee a
+conclusion whatever the outcome.**
 
-## 本段修掉的三个真 bug（都是同一类：失败伪装成零结果）
+## Three real bugs fixed in this segment (all the same family: failure disguised as a zero result)
 
-| # | 位置 | 后果 | 修复 |
+| # | Location | Consequence | Fix |
 |---|---|---|---|
-| 1 | `CASMI_POP_DIR` 锚在 `MANIFEST.json`，而 v17 锚在 `pc_lsid.npy` | 路径错 ⇒ 补丁 `init_worker` 抛错 ⇒ worker 池死 ⇒ **PubChem 通道整体静默关闭** ⇒ CLAW 看起来无效 | 先按 v17 锚定，失败回退 |
-| 2 | popularity 数组与 PubChem tier 的行序对齐关系是外部契约 | 错位 ⇒ `S`/`pop_top` 是垃圾 ⇒ CLAW 结果无法解释 | 加只读钩子打印 `pc_lsid` vs `pc_mass` 长度 |
-| 3 | `cell 15` 的 `except Exception as _pe: pass` 是全 notebook 唯一完全静默的失败路径 | 先验加载失败 ⇒ `pop30` 等价于对照，分数上看不出来 | 成功与失败都打印 |
+| 1 | `CASMI_POP_DIR` anchored on `MANIFEST.json` while v17 anchors on `pc_lsid.npy` | wrong path ⇒ the patch's `init_worker` raised ⇒ worker pool died ⇒ **the entire PubChem channel silently switched off** ⇒ CLAW looked inert | anchor as v17 does, fall back on failure |
+| 2 | The row-order alignment between the popularity arrays and the PubChem tier is an external contract | misalignment ⇒ `S`/`pop_top` are garbage ⇒ CLAW's result cannot be interpreted | added a read-only hook printing `pc_lsid` vs `pc_mass` lengths |
+| 3 | `cell 15`'s `except Exception as _pe: pass` is the notebook's only fully silent failure path | the prior fails to load ⇒ `pop30` equals the control, invisible in the score | print on both success and failure |
 
-**共同教训**：在"预期结果本来就可能是零"的实验里，**"结果不可解释"比"结果不好"更危险**——
-它会让我们基于错误证据砍掉一条正确的路线。移植参考实现时，"复制那一段"保证不了
-**前置条件与外部契约**也一致。
+**Shared lesson**: in experiments whose expected result may legitimately be zero,
+**"the result cannot be interpreted" is more dangerous than "the result is bad"** — it makes us
+retire a correct route on the strength of broken evidence. And when porting a reference
+implementation, "copy that block" does not guarantee the **preconditions and external contracts**
+came along with it.
