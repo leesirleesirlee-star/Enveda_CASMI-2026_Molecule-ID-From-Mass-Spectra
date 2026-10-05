@@ -64,7 +64,11 @@ def main():
     rank = {"np": 0, "syn": 1, "other": 2}
     df["regime"] = [regime_of(x) for x in df.lib]
     df["r"] = df.regime.map(rank)
-    g = df.groupby("inchikey14", sort=False)
+    # sort=True (the default) on purpose: the backtest kernel rebuilds this fold
+    # assignment from train.parquet in-notebook, and it can only use the default.
+    # Using sort=False here produced a different-but-same-sized split that silently
+    # disagreed with the notebook - two "fold 0"s that are not the same fold 0.
+    g = df.groupby("inchikey14")
     st = pd.DataFrame({
         "regime": g.regime.agg(lambda s: min(s, key=lambda x: rank[x])),
         "n_spectra": g.size(),
