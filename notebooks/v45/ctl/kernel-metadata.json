@@ -1,6 +1,6 @@
 {
-  "id": "nicholasnicklee/casmi26-v45-claw",
-  "title": "CASMI26 V45 claw",
+  "id": "nicholasnicklee/casmi26-v45-ctl",
+  "title": "CASMI26 V45 Ctl",
   "code_file": "notebook.ipynb",
   "language": "python",
   "kernel_type": "notebook",

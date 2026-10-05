@@ -723,6 +723,13 @@ def main():
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": False,
+        # Pinned to the image the V44 reference itself ran on. Kaggle's default image is
+        # now Python 3.13, but the ICEBERG/GLACIER runners install a bundled cp312 RDKit
+        # wheel and abort with 'not a supported wheel on this platform'; the notebook's
+        # try/except swallows that and silently drops the whole forward-model channel.
+        # See docs/EXPERIMENTS.md, 2026-10-05 (fourth segment).
+        "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+        "docker_image_pinning_type": "original",
         "enable_internet": False,
         "dataset_sources": list(a.assets_dataset) if isinstance(a.assets_dataset, list)
                             else [a.assets_dataset],

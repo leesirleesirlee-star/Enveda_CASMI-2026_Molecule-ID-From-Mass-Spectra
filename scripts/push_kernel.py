@@ -13,14 +13,13 @@ from __future__ import annotations
 import os
 import sys
 
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 os.environ.setdefault("KAGGLE_API_TOKEN",
                       open(os.path.join(ROOT, ".secrets/kaggle/access_token")).read().strip())
 
 from kaggle.api.kaggle_api_extended import KaggleApi  # noqa: E402
-
-# repository root, derived from this file so the tree is relocatable
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 
 def main():
     folders = sys.argv[1:]

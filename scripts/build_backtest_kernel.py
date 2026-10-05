@@ -255,6 +255,13 @@ def main():
     meta = {"id": f"nicholasnicklee/{a.slug}", "title": "CASMI26 V45 Backtest",
             "code_file": "notebook.ipynb", "language": "python", "kernel_type": "notebook",
             "is_private": True, "enable_gpu": True, "enable_internet": False,
+        # Pinned to the image the V44 reference itself ran on. Kaggle's default image is
+        # now Python 3.13, but the ICEBERG/GLACIER runners install a bundled cp312 RDKit
+        # wheel and abort with 'not a supported wheel on this platform'; the notebook's
+        # try/except swallows that and silently drops the whole forward-model channel.
+        # See docs/EXPERIMENTS.md, 2026-10-05 (fourth segment).
+        "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+        "docker_image_pinning_type": "original",
             "dataset_sources": DATASETS, "competition_sources": [COMP],
             "kernel_sources": [], "model_sources": []}
     mp = os.path.join(out, "kernel-metadata.json")

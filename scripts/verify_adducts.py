@@ -18,10 +18,13 @@ round-trips perfectly).
 Once the labelled train slice is available we repeat it against the known
 molecular_formula column.
 """
+import os
 import sys
 import numpy as np
 import pandas as pd
 
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 from casmi.core import ADDUCT_OFFSET, formula_mass, PROTON, ELECTRON, MONO  # noqa: E402
 
@@ -44,8 +47,6 @@ print(f"all {len(vc)} test adducts are modelled")
 print("\n=== decisive check on labelled train slice ===")
 import os
 
-# repository root, derived from this file so the tree is relocatable
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.exists(SLICE):
     s = pd.read_parquet(SLICE)
     s = s[s["molecular_formula"].notna()].copy()
