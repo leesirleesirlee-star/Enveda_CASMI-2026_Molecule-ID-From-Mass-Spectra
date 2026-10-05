@@ -191,6 +191,20 @@ VARIANTS: dict[str, list[tuple[int, str, str]]] = {
          "[3, 5, 7, 9, 11, 13, 15, 17, 19, 21]"),
         (3, RELTH_LINE, "LIB_TAU, REL_TH = 0.9, 200.0"),
     ],
+    # Targeted rather than uniform. cell 19 already branches on evidence strength:
+    #   lib_max >= LIB_TAU      -> leave the library ordering alone (PubChem never merged)
+    #   otherwise               -> merge PubChem into `slots`, choosing the profile by the score
+    #                              margin `rel = pc_fz[0] - best_pool_fz` against REL_TH
+    # `pc_aggressive` widens BOTH profiles and lowers REL_TH, so it also fires on molecules where
+    # the pool evidence is merely mediocre -- and for those, the PubChem slots displace correct
+    # pool candidates. This variant only widens the AGG profile, i.e. it gives PubChem many more
+    # slots exactly when PubChem's own evidence is strongly better than the pool's, and leaves the
+    # cautious profile untouched. One lever, one direction, no collateral.
+    "pc_adaptive": [
+        (3, SLOTS_LINE,
+         "SLOTS_AGG, SLOTS_GENTLE = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20], "
+         "[4, 8, 12, 16, 20]"),
+    ],
 }
 
 # day-2 combos
