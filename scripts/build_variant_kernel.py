@@ -150,6 +150,25 @@ CLAW_GATE = (
 )
 POP_MU_LINE = "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.15"
 
+# cell 15: the popularity block's `except ... : pass` is the ONLY completely silent
+# failure path in the notebook - if the pool popularity arrays fail to load, the
+# prior is disabled and pop30 silently becomes the control. Same failure class as
+# the CLAW wiring bug: a null result that cannot be told from a broken run.
+POP_DIAG_LOAD = (
+    "                    POOL_POP = np.load(os.path.join(POP_ROOT, 'pool_lsid.npy'))"
+    ".astype(np.float64) + np.load(os.path.join(POP_ROOT, 'pool_lpmid.npy')).astype(np.float64)",
+    "                    POOL_POP = np.load(os.path.join(POP_ROOT, 'pool_lsid.npy'))"
+    ".astype(np.float64) + np.load(os.path.join(POP_ROOT, 'pool_lpmid.npy')).astype(np.float64)\n"
+    "                    print('V45 POOL_POP loaded', POOL_POP.shape, "
+    "'mu=', POOLPOP_MU, f'{time.time()-T0:.0f}s', flush=True)",
+)
+POP_DIAG_EXC = (
+    "            except Exception as _pe:\n                pass",
+    "            except Exception as _pe:\n"
+    "                print('V45 POOL_POP prior DISABLED:', repr(_pe), flush=True)  # V45: was silent",
+)
+POP_DIAG = [POP_DIAG_LOAD, POP_DIAG_EXC]
+
 NOLOCK_CELL = """# V45 ablation: champion top-1 lock DISABLED.
 # The V44 lock dict is keyed on the *visible* test's molecule_ids; if the rerun
 # test differs that lookup raises KeyError and the notebook dies before the final
@@ -196,10 +215,10 @@ CLAW_EDITS = [
 VARIANTS["claw"] = CLAW_EDITS
 VARIANTS["claw_pop30"] = CLAW_EDITS + [
     (3, POP_MU_LINE, "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.30"),
-]
+] + [(15, a, b) for a, b in POP_DIAG]
 VARIANTS["pop30"] = [
     (3, POP_MU_LINE, "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.30"),
-]
+] + [(15, a, b) for a, b in POP_DIAG]
 
 # --- gate bypass -------------------------------------------------------------
 # The whole PubChem channel (2,674 s of GPU) sits behind `lib_max < LIB_TAU(0.9)`.
