@@ -83,6 +83,20 @@ CLAW_CONST = (
     "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 300, True\n"
     "USE_PROMOTION, S_TAU, POP_TAU = True, 6.0, 5.0  # V45 CLAW (lehau007 v27 / bobthebot369 v17)",
 )
+# cell 3: resolve CASMI_POP_DIR the way the reference does.
+# v17 does os.path.dirname(find('.../pc_lsid.npy')) - i.e. it anchors on the array
+# the patch actually loads. V44 anchors on MANIFEST.json. If those two files live
+# in different subdirectories, our CASMI_POP_DIR points somewhere without
+# pc_lsid.npy, the patched init_worker raises FileNotFoundError, the worker pool
+# dies and the *entire* PubChem channel silently falls back to "base lists only" -
+# which would make CLAW look like a no-op for the wrong reason.
+POP_ROOT_LINE = (
+    "    POP_ROOT = os.path.dirname(find('casmi26-pubchem-popularity-prior/**/MANIFEST.json'))",
+    "    try:  # V45: anchor on the array the v17 patch loads, like the reference does\n"
+    "        POP_ROOT = os.path.dirname(find('casmi26-pubchem-popularity-prior/**/pc_lsid.npy'))\n"
+    "    except Exception:\n"
+    "        POP_ROOT = os.path.dirname(find('casmi26-pubchem-popularity-prior/**/MANIFEST.json'))",
+)
 # cell 19: the promotion helper
 CLAW_PROMOTE = (
     "    return out\nrows, stats = [], dict(untouched=0, gentle=0, aggressive=0, no_pc=0)",
@@ -153,6 +167,7 @@ VARIANTS["topn120"] = [
 # --- CLAW: the field's only rank-1-moving lever (see docs/V45_消融手册.md) ---
 CLAW_EDITS = [
     (3, CLAW_CONST[0], CLAW_CONST[1]),
+    (3, POP_ROOT_LINE[0], POP_ROOT_LINE[1]),
     (9, CLAW_DIAG[0], CLAW_DIAG[1]),
     (9, CLAW_APPEND[0], CLAW_APPEND[1]),
     (19, CLAW_PROMOTE[0], CLAW_PROMOTE[1]),
