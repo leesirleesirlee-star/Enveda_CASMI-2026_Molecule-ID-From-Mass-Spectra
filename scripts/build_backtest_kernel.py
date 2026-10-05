@@ -48,8 +48,8 @@ BT_FOLD, BT_REGIME, BT_LIMIT = {fold}, {regime!r}, {limit}
 NP_LIBS = {{'enveda-np-examples'}}; SYN_LIBS = {{'enveda-180', 'pluskal_ms2', 'drug_plus'}}
 def _regime(lib):
     return 'np' if lib in NP_LIBS else ('syn' if lib in SYN_LIBS else 'other')
-COL = ['inchikey14', 'ingest_lib', 'ms2_mzs', 'ms2_normalized_intensities', 'base_peak_intensity',
-       'adduct', 'ionization_mode', 'instrument_type', 'precursor_mz',
+COL = ['inchikey14', 'normalized_smiles', 'ingest_lib', 'ms2_mzs', 'ms2_normalized_intensities',
+       'base_peak_intensity', 'adduct', 'ionization_mode', 'instrument_type', 'precursor_mz',
        'collision_energy_orig', 'collision_energy_ev', 'collision_energy_orig_units']
 import pyarrow.parquet as _pq
 _tr = pd.read_parquet(os.path.join(COMP, 'train.parquet'), columns=COL)
@@ -81,7 +81,9 @@ for _f in ['train.parquet']:
     _d = os.path.join(SM, _f)
     if not os.path.exists(_d):
         os.symlink(os.path.join(COMP, _f), _d)
-BT_TRUTH = dict(zip(_keyset, _keyset))            # molecule_id IS the inchikey14
+_sm = _tr.drop_duplicates('inchikey14').set_index('inchikey14').normalized_smiles.to_dict()
+BT_TRUTH = {{k: _sm.get(k) for k in _keyset}}     # molecule_id (inchikey14) -> SMILES
+assert all(BT_TRUTH.values()), 'a held-out structure has no SMILES'
 COMP = SM
 IS_RERUN, ICE_BUDGET = True, 300
 print(f'V45 BACKTEST fold={{BT_FOLD}} regime={{BT_REGIME}} molecules={{len(_keyset)}} '
