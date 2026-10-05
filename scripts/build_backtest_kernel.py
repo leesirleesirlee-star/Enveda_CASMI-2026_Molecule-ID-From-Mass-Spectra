@@ -191,9 +191,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", type=int, default=0)
     ap.add_argument("--regime", default="other")
-    ap.add_argument("--limit", type=int, default=2000,
-                    help="query molecules. ~18 s/molecule end-to-end puts the 9 h ceiling near "
-                         "1,800; 2,000 is only reachable with ICE/GL off (Tier 1).")
+    ap.add_argument("--limit", type=int, default=400,
+                    help="query molecules. Keep this at 400 (= the real test's size) whenever "
+                         "ICE/GL are ON: their budgets are fixed wall-clock caps, so a larger "
+                         "query set silently starves them and measures a different pipeline "
+                         "(at 2,000 queries ICE would cover ~1/5 as many molecules). Tier 1 "
+                         "policy screening is the exception: it runs with --degrade no_ice at "
+                         "--limit 2000, where the budgets are off by construction.")
     ap.add_argument("--slug", default="casmi26-v45-backtest")
     ap.add_argument("--out", default=os.path.join(ROOT, "notebooks", "backtest"))
     ap.add_argument("--degrade", default="none", choices=["none", "top1", "no_ice"],
