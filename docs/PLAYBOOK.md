@@ -1,884 +1,286 @@
-# V45 消融实验运行手册
+# V45 ablation runbook
 
-> 目标：把公开榜从 **0.417（第 111 名）** 推到 **> 0.417**，跨过 61 队并列的克隆群
-> （第 59 名 = 0.418）。只差约 **+0.001**，所以策略是「一次只动一个变量」的受控消融。
+> **Goal**: move the public LB from **0.417 (rank 111)** to **> 0.417**, crossing a clone
+> cluster of 61 tied teams (rank 59 = 0.418). The gap is about **+0.001**, so the strategy is
+> controlled ablation: **one variable at a time.**
 
-## 0.5 指标解剖（做实验前必须内化；这里纠正过一个真实错误）
+This document was reorganized for readability — it had grown by accretion, with section numbers
+in the order they were written rather than the order they are read. Content is unchanged; the
+original ordering is recoverable from git history.
+
+---
+
+# Part I — Operating rules
+
+## 1. Metric anatomy (internalize this before running anything)
 
 $$\text{MRR@25}=\frac{1}{400}\sum_{m}\frac{1}{\text{rank}_m}$$
 
-**❌ 一个我犯过并已纠正的错误**：曾把"尾部（第 2–25 名）的上限"算成
-$\frac{H_{25}-1}{400}=0.00704$。那是"每个名次恰好放一个分子"的算法，**不是上限**。
-正确的上限是：若 400 个分子的真值**全部**排在第 2 名，则
-$400\times\frac{1}{2}/400=\mathbf{0.5}$。**尾部根本不是天花板，它和头部同量级。**
+**❌ A mistake I made and corrected**: I once computed the "ceiling of the tail (ranks 2–25)" as
+$\frac{H_{25}-1}{400}=0.00704$. That is the "one molecule per rank" arithmetic, **not a
+ceiling**. The correct ceiling: if all 400 molecules' truths ranked 2nd, the tail would
+contribute $400\times\frac{1}{2}/400=\mathbf{0.5}$. **The tail is not a ceiling; it is the same
+order of magnitude as the head.**
 
-分数由两部分构成：
+The score has two parts:
 
-| 部分 | 贡献 | 说明 |
+| Part | Contribution | Note |
 |---|---|---|
-| 头部 | $p$（排在第 1 名的分子比例） | 每多 1 个分子 = **+0.0025** |
-| 尾部 | $0.417-p$ | 每个分子贡献 $1/\text{rank}\in(0,0.5]$ |
+| Head | $p$ (fraction of molecules at rank 1) | each extra molecule = **+0.0025** |
+| Tail | $0.417-p$ | each molecule contributes $1/\text{rank}\in(0,0.5]$ |
 
-反推 $p$：
-- 若 $p=0.30$，尾部需贡献 $0.117$，平均 $1/\text{rank}\approx0.167$（约第 6 名）—— 合理
-- 若 $p=0.40$，尾部只剩 $0.017/0.60\approx0.028$（约第 35 名，即大部分分子没进前 25）—— 不合理
+Back-solving $p$:
+- If $p=0.30$, the tail must contribute $0.117$, i.e. average $1/\text{rank}\approx0.167$
+  (about rank 6) — plausible
+- If $p=0.40$, the tail has only $0.017/0.60\approx0.028$ (about rank 35, i.e. most molecules
+  outside the top 25) — implausible
 
-⇒ **$p\approx0.30\text{–}0.35$，头部约 0.30–0.35，尾部约 0.07–0.12。两边都值得投入。**
+⇒ **$p\approx0.30$–$0.35$; head ≈0.30–0.35, tail ≈0.07–0.12. Both are worth investing in.**
 
-**与公开账本自洽**：`ICE_LAM=GL_LAM=1.0` 是纯尾部改动（ICE/GL 从不改 top-1），公开记录
-是 **+0.007** —— 正好相当于"尾部约 0.1，前向重排吃掉其中约 10%"。
+**Consistent with the public ledger**: `ICE_LAM=GL_LAM=1.0` is a pure tail change (ICE/GL never
+alter top-1) and the public record shows **+0.007** — exactly "a tail of about 0.1, of which
+forward reranking eats ~10%".
 
-**跨过 0.417→0.418 的等价条件**（任一条即可）：
+**Equivalent conditions for crossing 0.417 → 0.418** (any one):
 
-- 多 **1** 个分子进 rank 1（+0.0025）
-- 约 **4** 个分子从第 5 名提到第 3 名（每个 +0.00067）
-- 约 **10** 个分子从第 10 名提到第 5 名（每个 +0.00010）
+- **1** more molecule at rank 1 (+0.0025)
+- about **4** molecules moving from rank 5 to rank 3 (+0.00067 each)
+- about **10** molecules moving from rank 10 to rank 5 (+0.00010 each)
 
-## 0.7 已定案：champion 锁在隐藏重跑上**没有生效**（所以 `nolock` 是冗余实验）
+## 2. Three facts to internalize first (or you will design the wrong experiment)
 
-这一步很关键，因为它在两轮里反复出现。用**反证**排除所有能让锁生效的情形：
+1. **The visible `test.parquet` is not the evaluation set.** Measured: one submission's file size
+   as recorded by Kaggle was 530,716 bytes, while the same kernel's output on public data was
+   393,908 bytes. The same code cannot differ by 35% on the same input ⇒ the hidden rerun's
+   input differs. **Therefore any local score obtained by "recovering truth from train" cannot
+   predict the LB.**
+2. **The public LB is a deterministic oracle.** Re-scoring the same submitted file gives the same
+   score, so deltas *within* one experiment are interpretable. Cross-version retraining noise
+   (about ±0.006) does not apply here.
+3. **Each variant costs two GPU runs.** Pushing a kernel version triggers a public-data batch run
+   (~2 h), and submission is only allowed once that finishes; the submission itself triggers a
+   hidden rerun (~2.5 h). Each account may hold at most **2 concurrent GPU sessions**; the
+   submission allowance is **5/day per team**.
 
-| 情形 | 假设 | 预测分数 | 实际 | 判定 |
-|---|---|---|---|---|
-| X | 隐藏 molecule_id 与可见相同，且**分子也相同** | 答案键 = 可见 test 反查真值；我们那份可见 test 输出对该真值得 **0.9902**（top-1 有 393/400 命中）⇒ 提交应拿 ≈0.98 | **0.417** | ❌ 排除 |
-| Y | 隐藏 molecule_id 与可见相同，但**分子不同**（ID 复用） | 锁把"为诱饵分子算出的结构"强插到 rank 1 ⇒ 第 1 名恒错，正确候选整体下移一位。若解锁时 rank-1 命中率 p≈0.30–0.35，则锁后 ≈ (0.417−p) + 0.5p ≈ **0.25** | **0.417** | ❌ 排除 |
-| Z | 隐藏 ID 与可见不同 | `_champion_top1[str(mid)]` 抛 **KeyError**，cell 31 崩；cell 21 已写出的 `submission.csv` 仍被评分（我们那次 status=complete 即为证） | 0.417 | ✅ 唯一自洽 |
+## 3. The real budget is a 30 h/week GPU quota, not "5 submissions/day"
 
-⇒ **隐藏集的 molecule_id 与可见 test 不同；champion 锁从未生效；我们的有效提交就是
-cell 21 的融合结果。** 硬编码/记忆答案这条路彻底关闭，且 `nolock` 变体只会得到同样的分数
-（它唯一的实际价值是**去掉一个崩溃**，让 cell 32 的最终校验能跑完——留作稳健性改动，不值一次提交配额）。
+Measured on this account via the `api.quota_view()` endpoint behind `kaggle quota`:
 
-**副作用（必须记住）**：由于 notebook 在 cell 31 崩溃，**cell 32 从未运行**，被评分的是
-cell 21 的原始输出。因此任何"删掉锁"的变体都会顺带改变最终文件（多跑一次去重/截断），
-**这会污染消融**——所以 `claw` 等变体一律**保留** cell 31 原样，与基线保持同一条崩溃路径。
+```
+totalTimeAllowed = 1 day + 21600s = 30.0 h / week      <- the real budget
+timeUsed         = 2637 s  (0.73 h)
+timeReserved     = 41885 s (11.63 h)  <- two running sessions reserved at maximum duration
+```
 
-## 0. 先读这三条事实（否则会做错实验）
+**This means I had mis-estimated experiment throughput.** The cost per variant is:
 
-1. **可见 `test.parquet` 不是评测集。** 实测：某次提交 Kaggle 记录的文件大小是
-   530,716 字节，而同一 kernel 在公开数据上跑出的输出只有 393,908 字节。同一份代码
-   在同样输入上不可能差 35% ⇒ 隐藏重跑的输入不同。
-   **因此任何"从 train 反查真值"得到的本地分数都不能预测榜分。**
-2. **公开榜是确定性 oracle。** 同一份提交文件重复打分得到同一个分数，所以同一次实验内
-   的 delta 是可解释的。跨版本重训带来的噪声（约 ±0.006）不适用。
-3. **每个变体要花两次 GPU 运行。** 推送 kernel 版本会触发一次公开数据批量运行（约 2 h），
-   运行完成后才允许提交，而提交本身再触发一次隐藏重跑（约 2.5 h）。
-   每账号同时最多 **2 个 GPU 会话**，提交配额 **5 次/天（按团队）**。
+| Stage | Duration | Avoidable? |
+|---|---|---|
+| Public-data batch run triggered by the push | 2.0–2.8 h | **no** (submission is refused until it finishes) |
+| Hidden rerun triggered by the submission | ~2.5 h | no |
+| **Total** | **~5 h per variant** | |
 
-## 1. 一个变体的完整生命周期
+⇒ **30 h/week ÷ 5 h ≈ 6 variants per week.** That is the real ceiling (a 5/day submission
+allowance is 35/week and not a bottleneck at all).
+
+**The discipline this implies**: every variant must answer "will this change a decision?" On that
+basis I have already killed three things — pool expansion (ceiling 0.05%), a 1.15 GB code
+download (the answer was obtained elsewhere), and `merge_force` (code analysis downgraded its
+expectation from "possibly large" to "expected no change") — and gave the freed slot to `pop30`,
+which has documentary support.
+
+**One small fix made**: pushes now carry a session duration cap (`--session-timeout-s`, default
+4 h). Without a cap, sessions are reserved at maximum duration (~5.8 h each), which limits how
+many variants can be queued concurrently. Three variants × ~5.8 h still fits inside 30 h, so
+this is headroom optimisation rather than a rescue — **the binding constraint is the 30 h/week
+total.**
+
+**The conclusion from this section alone**: spend carefully. Of ~6 weekly slots, only 1–2 should
+bet on a new mechanism; the rest go to verification and combinations.
+
+## 4. A variant's full lifecycle
 
 ```powershell
-# 1) 造变体（断言式：替换没命中会直接报错，避免"静默 no-op 实验"）
+# 1) build the variant (assertion-based: a replacement that misses raises immediately,
+#    so a "silent no-op experiment" is impossible)
 python scripts\build_variant_kernel.py --variant icefull
 
-# 2) 推送（= 触发公开数据运行；此时不消耗提交配额）
+# 2) push (= triggers the public-data run; consumes no submission allowance)
 python scripts\push_kernel.py notebooks\v45\icefull
 
-# 3) 等运行结束 → 自动提交 → 轮询分数（后台跑，别阻塞）
+# 3) wait for COMPLETE -> auto-submit -> poll the score (run in the background, do not block)
 python scripts\wait_submit_report.py --kernel nicholasnicklee/casmi26-v45-ablation `
     --version 3 --desc "V45 icefull: ICE_BUDGET 300->3000" --timeout-h 14
 ```
 
-**必须先等运行 COMPLETE**，否则提交会被拒：
+**The run must be COMPLETE first**, or submission is refused:
 `Submission not allowed: Notebook is still running. Did not find provided Notebook Output File.`
 
-## 2. 判定规则
+## 5. Decision rules
 
-| 观察 | 结论 |
+| Observation | Conclusion |
 |---|---|
-| 变体 > ctl + 0.001 | 真实改进，纳入主线，下一步做它的组合 |
-| 变体 ≈ ctl（±0.001） | 该旋钮在当前配置下无影响，别再花配额 |
-| 变体 < ctl − 0.001 | 该旋钮有害，记录并远离 |
+| variant > ctl + 0.001 | real improvement; adopt it and next build its combination |
+| variant ≈ ctl (±0.001) | that knob has no effect in this configuration; stop spending quota on it |
+| variant < ctl − 0.001 | that knob is harmful; record it and stay away |
 
-`ctl` 是逐字复制 V44 的对照。**这个对照不需要再花一次提交**：作者那份与 ctl **逐字相同**的代码
-已经拿到 0.417，且 gengsr 的 notebook 自报 0.413、我们独立复现也是 **0.413 逐位一致**——
-复现是确定性的。因此 ctl 的分数就是 **0.417**。（曾经排过 ctl 的提交任务，已撤销，理由见
-`docs/EXPERIMENTS.md` 的「不单独提交 ctl」一节。）
+`ctl` is a verbatim copy of V44. **It does not need its own submission**: the author's code,
+**character-for-character identical** to ctl, already scored 0.417, and gengsr's notebook claims
+0.413 with our independent reproduction also **0.413, digit for digit** — reproduction is
+deterministic. So ctl's score is **0.417**. (A ctl submission was once queued and then cancelled;
+see the "do not submit ctl separately" section of `docs/EXPERIMENTS.md`.)
 
-## 3. 变体清单（每个变体一个独立 kernel slug，推送零状态歧义）
+## 6. Variant list (one kernel slug per variant, so a push has zero state ambiguity)
 
-| 变体 | kernel slug | 改动位置 | 假设 | 状态 |
+| Variant | Kernel slug | Where it changes | Hypothesis | Status |
 |---|---|---|---|---|
-| `ctl` | `…-v45-ablation` v1 | 无 | 对照；分数已知 = 0.417 | 运行完成 |
-| `nolock` | （已弃用） | 删 cell 31 锁 | **已由反证排除**（§0.7）：锁从未生效，只会重复 0.417 | 撤销 |
-| **`claw`** | `…-v45-claw` | cell 3 门控常数 + cell 9 移植 v17 popularity 探针 + cell 19 `promote()` 与门控 | **全领域唯一能改动 rank 1 的机制**（§7） | **排队中** |
-| **`icefull`** | `…-v45-icefull` | cell 3 `ICE_BUDGET 300 → 3000` | 日志实测 ICE 只覆盖 71/371 分子；隐藏集分子更大 ⇒ 候选更多 ⇒ 饿得更狠 | **排队中** |
-| `unlock_engine` | `…-v45-unlock` | cell 7 去掉 `score[top] = max+1`，`pair_weight 0.15 → 0.35` | PairTail LambdaRank（`eval_at=(1,5,25)`）现在永远改不动第 1 名 | 备好 |
-| `topn120` | `…-v45-topn120` | cell 3 `TOPN 60 → 120`，ICE 预算 3600 | 大分子候选更多，top-60 可能切掉真值 | 备好 |
-| `pop30` | `…-v45-pop30` | cell 3 `POOLPOP_MU 0.15 → 0.30` | 公开账本记 +0.003~0.005；重排 BASE，可改到 rank 1 | 备好 |
-| `claw_pop30` | `…-v45-clawpop30` | `claw` + `POOLPOP_MU 0.30` | 组合 | 备好 |
-| `pc_aggressive` | `…-v45-pcagg` | cell 3 尾槽加倍，`REL_TH 600 → 200` | 让更多"池外"PubChem 候选进入尾槽 | 备好 |
-| `combo_a` / `combo_b` | `…-v45-comboa` / `…-comboB` | icefull+unlock / icefull+pcagg | 组合 | 备好 |
+| `ctl` | `…-v45-ablation` v1 | nothing | control; score known = 0.417 | run complete |
+| `nolock` | (retired) | delete the cell-31 lock | **ruled out by contradiction** (§14): the lock never fires, so it would just repeat 0.417 | cancelled |
+| **`claw`** | `…-v45-claw` | cell 3 gate constants + cell 9 ports the v17 popularity probe + cell 19 `promote()` and gate | **the only mechanism in the field that can change rank 1** (§17) | **queued** |
+| **`icefull`** | `…-v45-icefull` | cell 3 `ICE_BUDGET 300 → 3000` | the log shows ICE covered only 71/371 molecules; hidden molecules are larger ⇒ more candidates ⇒ starved harder | held |
+| `unlock_engine` | `…-v45-unlock` | cell 7 removes `score[top] = max+1`, `pair_weight 0.15 → 0.35` | PairTail LambdaRank (`eval_at=(1,5,25)`) currently can never change rank 1 | built |
+| `topn120` | `…-v45-topn120` | cell 3 `TOPN 60 → 120`, ICE budget 3600 | larger molecules have more candidates; top-60 may cut the truth | built |
+| `pop30` | `…-v45-pop30` | cell 3 `POOLPOP_MU 0.15 → 0.30` | public ledger says +0.003~0.005; reranks BASE and can reach rank 1 | held |
+| `claw_pop30` | `…-v45-clawpop30` | `claw` + `POOLPOP_MU 0.30` | combination | built |
+| `pc_aggressive` | `…-v45-pcagg` | cell 3 doubles tail slots, `REL_TH 600 → 200` | let more out-of-pool PubChem candidates into the tail | built |
+| `combo_a` / `combo_b` | `…-v45-comboa` / `…-comboB` | icefull+unlock / icefull+pcagg | combinations | built |
 
-推送与排队（`--after` 指向正在占用 GPU 会话的 kernel）：
+Pushing and queueing (`--after` points at the kernel currently holding the GPU sessions):
 
 ```powershell
 python scripts\queue_variant.py --folder notebooks\v45\claw `
     --desc "V45 claw: v17 CLAW promotion" --after nicholasnicklee/casmi26-v45-ablation
 ```
 
-## 3.5 判定树（拿到分数后照此执行）
+## 7. Decision tree (follow this once a score arrives)
 
 ```
-score(claw) 和 score(icefull) 都拿到
-├─ 任一 > 0.417
-│   ├─ 立刻推它的组合（claw → claw_pop30；icefull → combo_a/combo_b）
-│   └─ 把胜出配置冻结为当前最优，并写进 docs/LEADERBOARD.md
-└─ 两者都 ≈ 0.417（±0.001）
-    ├─ 推 unlock_engine（rank-1 杠杆，唯一还没试的头部旋钮）
-    ├─ 推 topn120（候选深度；对着"隐藏集分子更大"这条已证实的分布偏移）
-    └─ 若仍无起色 ⇒ 浅层旋钮到头，转内容路线：
-        · 把 LOTUS(150,590) + NPAtlas(33,497) 并入候选池（公开池 77 万结构里没有这两个库）
-        · 或核验"加合物假设展开"（研究报告测得 3.34% 库记录的加合物归属错误，
-          若隐藏集有同类错误，受影响分子的质量窗整体偏移 ⇒ 必然 miss）
+once both score(claw) and score(icefull) are in
+├─ either > 0.417
+│   ├─ immediately push its combination (claw -> claw_pop30; icefull -> combo_a/combo_b)
+│   └─ freeze the winner as current best and write it into docs/LEADERBOARD.md
+└─ both ≈ 0.417 (±0.001)
+    ├─ push unlock_engine (a rank-1 lever, the only untried head knob)
+    ├─ push topn120 (candidate depth; aimed at the confirmed distribution shift
+    │   "hidden molecules are larger")
+    └─ if still nothing ⇒ shallow knobs are exhausted, move to content routes:
+        · merge LOTUS (150,590) + NPAtlas (33,497) into the candidate pool
+          (the public 775k pool lacks both libraries)   [since measured: +373 structures, dead]
+        · or verify "adduct-hypothesis expansion" (the research report measures a 3.34%
+          adduct-assignment error rate in the library; if the hidden set has such errors,
+          affected molecules' mass windows shift wholesale ⇒ guaranteed miss)
 ```
 
-## 0.8 `lib_max` 到底可不可信？——从公开 notebook 里读到了相似度内核（已解决）
+## 8. Variant creation is frozen; switch to strict serial (decided 2026-10-05)
 
-这个问题决定了 `claw` 是不是活杠杆（CLAW 整段门控在 `lib_max < 0.9` 分支内）。
-1.15 GB 的引擎数据集下载反复断流，**但不需要它**：`ahmedberatozer/casmi26-v4q-inference`
-（公开 notebook）里内嵌了引擎的相似度内核。
+**Decision**: build no more variants. The 20 already built are **assets, not a to-do list**.
 
-```python
-def entropy_sim(qmz, qp, cmz, cp, tol):
-    ...
-    if tot <= 0: return 0.0                      # ← 空谱返回 0，不是 1
-    return 1.0 - (2.0 * SAB - SA - SB) / np.log(4.0)   # 标准熵相似度，值域 [0,1]
+**Why**: the pipeline can test about 6 variants a week (30 h GPU ÷ 5 h per variant) and I had
+built 20. **The marginal value of building more is near zero, and it is speculative work that
+project discipline explicitly rejects** ("no unrequested abstractions", "deletion over
+addition"). Worse, I wrote "stopping here" and then built one more — which shows **self-restraint
+alone is not enough; the rule has to go into the document.**
 
-def entropy_sim_shift(qmz, qp, cmz, cp, tol, shift):
-    a = entropy_sim(...); b = entropy_sim(q, ref+shift)   # 修饰余弦思想：同分子不同加合物保持中性丢失
-    return a if a > b else b
-```
-
-**前置处理是温和的**（取自同一 notebook 里的 `CFG`）：`INT_FLOOR = 0.002`（保留基峰 0.2% 以上）、
-`MAX_PEAKS = 256`、`INT_POWER = 1.0`、`ENT_WEIGHT = True`。也就是说**谱不会被"清洗"到只剩几个峰**。
-
-⇒ **推论（代码 + 分数双重支撑）**：
-
-1. `entropy_sim` 的值域是 `[0,1]`，取 1.0 **当且仅当**（清洗+可选位移后的）峰分布完全一致；
-   空谱返回 0。**没有"退化返回 1.0"的分支。**
-2. 前置处理温和 ⇒ 不同分子被清洗成同一个谱的可能性很低。
-3. 因此 `lib_max = 1.0` 意味着**库里存在该隐藏分子的精确谱**。
-4. 若 400 个隐藏查询全都如此，则答案在 train 里可精确检索 ⇒ 分数该接近 1.0。
-   **实测 0.417。**
-
-⇒ **`lib_max` 不可能在隐藏集上恒为 1.0；`lib_max < 0.9` 的合并门控在隐藏集上是开着的。**
-⇒ **PubChem 通道会触发，CLAW 会触发——已排队的 `claw` 是活杠杆，不是死路。**
-
-（`merge_force` 仍然保留在队列里作行为学交叉验证：如果通道其实一直开着，它就不会改变分数。）
-
-**并因此终止了一项工作**：1.15 GB 的 `casmi26-v4b-models` 下载已取消——它本来只是为了读
-`engine.run` 里怎么组装 `info['lib_max']`，而现在答案已经拿到，且不会再改变任何决定。
-
-## 0.9 真正的预算约束是 **GPU 周配额 30 小时**，不是"5 次提交/天"
-
-用 `kaggle quota` 对应的 API（`api.quota_view()`）实测本账号：
+**What replaces it**:
 
 ```
-totalTimeAllowed = 1 day + 21600s = 30.0 h / 周      ← 真正的预算
-timeUsed         = 2637 s  (0.73 h)
-timeReserved     = 41885 s (11.63 h)  ← 两个运行中的会话按最大时长预留
+advance one variant at a time
+  -> take its score (+ log diagnostics)
+  -> read it with the tiered rules in §18
+  -> then decide whether the next is "its combination", "another independent lever",
+     or "change direction"
 ```
 
-**这意味着实验吞吐被我此前估错了。** 每个变体的成本是：
+**Queued but deliberately halted**: `icefull`, `pop30` (both queue jobs terminated having pushed
+nothing — no loss). Not because they are bad, but because **whether they deserve 5 h depends on
+`claw`'s result**: if `claw` works, that 5 h belongs to `claw_pop30`; if `claw` is inert because
+its gate is too strict, it belongs to sweeping `S_TAU`. **Pre-committing slots to two independent
+levers gives up the right to let the previous result choose the next step.**
 
-| 阶段 | 时长 | 是否可省 |
-|---|---|---|
-| 推送触发的公开数据批量运行 | 2.0 s–2.8 h | **不可省**（不跑完就拒绝提交） |
-| 提交触发的隐藏重跑 | ~2.5 h | 不可省 |
-| **合计** | **~5 h / 变体** | |
+**Cost**: one GPU slot sits idle for `claw`'s ~4.5 h. That is a **knowingly accepted** cost —
+idling 4.5 h out of a 30 h weekly budget in exchange for the next direction being chosen by data
+rather than guessed in advance.
 
-⇒ **30 h/周 ÷ 5 h ≈ 每周 6 个变体**。这才是真正的上限（提交配额 5/天 = 35/周，根本不是瓶颈）。
+---
 
-**由此产生的纪律**：每个变体都要能回答"它会不会改变决定"。我已经因此砍掉三件事——
-候选池扩容（上限 0.05%）、1.15 GB 代码下载（答案已从别处拿到）、以及 `merge_force`
-（代码分析把它的预期从"可能很大"降级为"预期无变化"），把省下的槽位给了有文档依据的 `pop30`。
+# Part II — Where the score comes from
 
-**已做的一个小修正**：推送时给 session 加时长上限（`--session-timeout-s`，默认 4 h）。
-不设上限时会话按最大时长预留（~5.8 h/会话），会把"同时能排队多少变体"卡住。
-当前 3 个变体 × ~5.8 h 的预留仍在 30 h 之内，所以这条是余量优化，不是救命修正——
-真正的约束是**总用量 30 h/周**。
+## 9. Decomposing 0.417 into recall × ranking (the first real anchor)
 
-**只读这一节就够的结论**：省着花。每周 6 次机会，其中只有 1–2 次该用来赌新机制，
-其余用于验证与组合。
-
-## 8. 实验预算与优先队列（每周只有 6 次机会，先读这一节再排实验）
-
-**预算**：GPU 周配额 30 h（§0.9），每变体约 5 h ⇒ **约 6 变体/周**。提交配额 5/天不是瓶颈。
-
-**只有一类杠杆值得优先花钱：能改动 rank 1 的。** 头部约占 0.30–0.35，尾部约 0.07–0.12（§0.5）；
-而 rank 1 只由这四处决定：
-
-| # | rank 1 的决定处 | 谁能改它 | 状态 |
-|---|---|---|---|
-| 1 | v4b ranker 的 top-1（160 特征 × 4 GBM） | 固定资产，改不动 | — |
-| 2 | 池流行度重排 `z(scs) + μ·POOL_POP` | **`pop30`**（μ 0.15→0.30） | 已排队 |
-| 3 | PubChem 合并后的 rank 1 | **`claw`**（S>6 ∧ pop≥5 时提升） | 已排队 |
-| 4 | RRF 融合（`ALPHA=0.6`，v4 rank1 = 0.25 vs 引擎 rank1 = 0.15） | **`unlock_engine`**（解开引擎自带 top-1 盾） | 已建好 |
-
-尾部杠杆（`icefull`、`topn120`、`pc_aggressive`）上限低一档，但**不是零**（尾部 0.07–0.12，
-且 `ICE_LAM=GL_LAM=1.0` 这个纯尾部改动公开记录 +0.007）。
-
-### 排好的队列（按 EV 降序）
-
-| 序 | 变体 | 类别 | EV 依据 | 判读 |
-|---|---|---|---|---|
-| 1 | **`claw`** | rank 1 | 公开账本声称 +0.024~0.043；0.413→0.417 的实际台阶约 +0.004 | > 0.417 ⇒ 立刻做 `claw_pop30` 组合 |
-| 2 | **`pop30`** | rank 1 | 作者自列 +0.003~0.005；重排 BASE 会传播到全链路 | 同上 |
-| 3 | **`icefull`** | 尾部 | notebook 自己的文档写 5400，代码是 300（覆盖 71/371） | 仅当 ≥ +0.002 才留 |
-| 4 | `unlock_engine` | rank 1 | PairTail 模型用 `eval_at=(1,5,25)` 专门训过，却被盾挡住 | > 0.417 ⇒ 与 `claw` 组合 |
-| 5 | `topn120` | 尾部+召回 | 隐藏集分子更大（157–1159 Da）⇒ 同质量候选更多，top-60 可能切掉真值 | |
-| 6 | `alpha12` | rank 1 | 让引擎的 top-1 有机会赢过 v4（ALPHA 必须 >1.0 才能翻盘，因为稳定排序偏向先插入的 v4） | 未建 |
-| 7 | `pc_aggressive` | 尾部 | 尾槽加倍 | 未建 |
-
-### 每次实验后必做
-
-0. **先做一次"管线保真"核对（只需做一次，等 ablation 跑完就能做）**：下载 batch run 产出的
-   `submission.csv`，与已知的公开 V44 输出比对。**基准值已从产物自身核对**
-   （`.deepworks/tmp/v44_submission.csv`，即作者公开运行下载回来的那份）：
-
-   | 项 | 值（已核对） |
-   |---|---|
-   | 字节数 | **393,908** |
-   | 行数 | **400** |
-   | 候选总数 | **9,772** |
-   | 每行候选数 | 3–25；**377 行 = 25，23 行 < 25** |
-   | 空单元格 | 0 |
-
-   若逐字节一致 ⇒ 证明 `build_variant_kernel → push → 运行 → 输出` 这条链是保真的；
-   若不一致 ⇒ 说明**我们推送的 notebook 与参考实现有我们不知道的差异**，那么此后所有变体的
-   分数都建立在一个未经校验的基线上。
-   （`ctl` 是逐字复制 V44 的变体，所以它必须复现这份输出。）
-
-   ⚠️ **操作细节**：`kernels/output` **只返回最新版本**的文件，而 ablation kernel 的最新版本是
-   `nolock`(v2)，不是 `ctl`(v1)。所以实际能下载到的是 **nolock 的公开输出**，而它与参照的
-   关系是**可精确预测的**——两者只差 cell 31 那一处锁，而公开数据上锁确实会生效且
-   **只改动 1 个分子**（作者运行日志：`V29 final top-1 locks applied: 1`）。
-   ⇒ 判定标准改成：**与参照的差异应当只出现在 1 行内**（该行是候选重排，不是内容变化）。
-   这比"逐字节一致"信息量更大——它同时验证了管线保真**和**锁的行为符合文档。
-1. **试着读隐藏重跑的日志**：提交后拉 `kernels/output`，检查日志里的 `_sig` 是否 ≠ 公开 test 的
-   `654e030e4173780e945252b4a5adf70b`。若是，说明能读到隐藏诊断——`claw` 的 cell 19 会打印
-   `merge stats`（含我加的 `promoted` 计数），那是判断 CLAW 有没有触发的直接证据。
-   （已知反例：`xiaoyuzhoux120` 那个 kernel 的 `lastRunTime`(10-02) 早于提交(10-05)，
-   所以该接口返回的是**批量运行**的日志。仍需对本次提交实测确认。）
-2. 把分数、ref、delta 写进 `docs/EXPERIMENTS.md` 的台账。
-3. **只有 > 基线 + 0.001 才当信号。**
-
-### ⚠️ 效应量这么小，必须做重复实验才能相信
-
-我们要找的是 **+0.001~0.005** 量级的位移，而**重跑本身可能有 ±0.002 量级的方差**：
-
-- 支持"确定性"的证据：gengsr 的 notebook 自报 0.413，我们独立复现**逐位一致**。
-- 反对的证据：复现那份提交的描述里写着 "documented GPU and original **adduct-tie variance**"。
-- GPU 上 `argsort(kind='stable')` 稳定，但 ICEBERG/GLACIER 的 cuda 前向、以及
-  `adducts = max(adducts, key=adducts.count)` 这类**并列取首个**的选择，都可能因浮点差异改变结果。
-
-**因此**：
-
-| 观察到的 delta | 处理 |
-|---|---|
-| < 0.001 | 视为无信号 |
-| 0.001 ~ 0.003 | **不可直接采信**。必须用同一配置再跑一次（不同 kernel 版本等价于一次重复） |
-| > 0.003 | 可先采信，但仍应在把它写进最终提交前复现一次 |
-
-代价是每次"获胜"要多花约 5 GPU 小时。在每周只有 6 次额度的预算下，这意味着
-**一次实验的完整闭环（发现 → 复现）要占掉 2 次额度**。排实验时要把这笔账算进去，
-不要一天把额度花光。
-
-## 0.10 `lib_max` 的定义已从**引擎源码**确认（此前的推理成立）
-
-拿到 `code/casmi/engine.py` 后直接读到了它的组装过程：
-
-```python
-lib_max = np.zeros(nc)                    # nc = 候选数  ← 注意是"per-candidate"的
-...
-    if v > lib_max[ci]: lib_max[ci] = v   # 把每个库命中的相似度归到它对应的候选上, 取最大
-...
-lmax = float(lib_max.max())               # 分子级的标量, 就是 info['lib_max']
-X[:, col['lib_max']] = lib_max            # 同时也是 160 特征之一
-```
-
-⇒ **`lib_max` = "窗口内候选"中最好的库谱相似度**（不是全库最大）。所以
-`lib_max ≥ 0.9` 的含义是：**窗口里存在一个候选，它的库谱与查询的相似度 ≥ 0.9**——
-即库里确实知道这个化合物。这与公开领域那道门控的设计意图完全一致。
-
-结合 §0.8（`entropy_sim` 值域 `[0,1]`、空谱返回 0、前置处理温和）与 §0.7 的分数反证：
-
-> **`lib_max` 不可能在隐藏集上恒为 1.0；合并门控在隐藏集上是开着的；CLAW 会触发。**
-
-这条现在是**源码确认**，不再是推理。
-
-## 0.11 引擎的 160 个特征（参考材料，建模线会用到）
-
-`engine.py` 的 `FEATURES` 按族列出（v4b 在此基础上再拼上 `fe_v4` 的若干族，合计 160）：
-
-| 族 | 特征 | 含义 |
-|---|---|---|
-| `lib_*`（10） | `lib_max/mean/top3/nspec/cos/max_rank/gap/grp_max/hit/same_adduct` | 库谱证据 |
-| `ap_* / tan_* / top_sim*`（16） | `ap, a1, best_tan, top_tan, mean_tan, ap_rank, ap_gap, ap_grp_max, top_sim, ap_np, best_tan_np, top_sim_np, ap_np_gap, ap_sum, n_analog_hi, tan_zero_shift` | **类似物传播** |
-| `fz*`（14） | `fz, fz_z, fz_rank, fz_gap, fz_norm, fz_top, fz_softmax, fz_grp_ent, fz_grp_gap, fz_single, fz_single_gap, fz_merged, fz_merged_gap` | FPNet 指纹分 |
-| `fp_*`（5） | `fp_cos, fp_tan, fp_ll, fp_ll_gap` | 指纹几何/似然 |
-| `el_*`（5） | `el_c, el_n, el_o, el_sum, el_rank` | 元素计数（来自 pool 的分子式） |
-| `fr_* / sf_*`（16） | `fr_int, fr_int_mean, fr_cnt, fr_top10, fr_strict, fr_rank, fr_gap, fr_z, fr_n, sf_*` | **碎片解释度**（MetFrag 式项在这里是"特征"，不是独立通道） |
-| `formula_* / mass_* / n_*`（10） | `formula_share, n_formula, formula_is_top, mass_ppm, mass_ppm_rank, n_heavy, fp_bits, n_cand, n_query, n_pos, n_neg, target_mass` | 分子式与质量 |
-| 交互项（6） | `lib_x_fz, ap_x_fz, agree_lib, agree_ap, fr_x_fz, q_npeaks` | 通道间一致性 |
-| **`gen_*`（6）** | **`is_gen, gen_parent_sim, gen_steps, gen_parent_tan, n_gen, gen_rank_fz`** | **Class-3 生成候选**（基于母体的编辑） |
-| `xs_*`（8） | `xs_max, xs_mean, xs_merged, xs_gap, xs_rank, xs_z, xs_top, xs_grp_gap` | 交叉编码器 |
-
-**两个值得记住的点**：
-
-1. **生成通道已经存在且有 6 个特征**（`is_gen` 等）——所以"我们需要生成"这句话在公开方案里已经部分实现了，
-   问题不是"有没有生成"，而是它贡献了多少。
-2. **碎片解释度（`fr_*`/`sf_*`）也已作为特征存在** —— 这解释了为什么我此前评估"移植 v17 的独立碎片项"
-   收益有限：**同一个信号已经在 ranker 的输入里了**，只是换了个位置。
-
-## 8.7 ⛔ 变体创建已冻结；改为严格串行（2026-10-05 决定）
-
-**决定**：不再新建变体。已建好的 20 个是**资产**，不是待办清单。
-
-**为什么**：流水线每周只能测约 6 个变体（30 h GPU 配额 ÷ 5 h/变体），
-而我已经建了 20 个。**继续建变体的边际价值接近零，而且属于项目纪律明确反对的投机性工作**——
-"不做未被要求的抽象"、"删除优先于新增"。更糟的是，我在写下"就在这里停手"之后又建了一个，
-这说明**光靠自我约束不够，需要把规则写进文档**。
-
-**改成什么**：
-
-```
-一次只推进一个变体
-  → 拿它的分数（+ 日志诊断）
-  → 用 §9 的分层规则判读
-  → 再决定下一个是"它的组合"、"另一个独立杠杆"、还是"换方向"
-```
-
-**已排队但被主动叫停的**：`icefull`、`pop30`（两个 queue 任务已终止，什么都没推送，无损失）。
-理由不是它们不好，而是**它们是否值得花 5 h，取决于 `claw` 的结果**——
-若 `claw` 有效，那 5 h 该给 `claw_pop30`；若 `claw` 因门控太严而无效，那该给扫 `S_TAU`。
-**预先把槽位押在两个独立杠杆上，等于放弃了"用上一个结果决定下一个"的权利。**
-
-**代价**：`claw` 跑的 ~4.5 h 里会有一个 GPU 槽位空着。这是**明知而接受**的成本——
-每周 30 h 的额度里空 4.5 h，换回的是下一步的方向由数据决定而不是由我提前猜。
-
-### ✅ 可行性已确认：引擎自带"无泄漏模拟"接口，**不需要重建池/库资产**
-
-我原以为 A 的最大成本是"把留出分子的结构与谱从池和库里剔掉"——那要重建
-"结构 + 谱 + 碎片 + 指纹"四件套。**读 `engine.py` 后发现不必**：作者已经内建了这套模拟钩子。
-
-```python
-def run(self, spectra, target, exclude=None, exclude_sid=-1, exclude_lib=-1, drop_pid=-1):
-    """...
-    exclude: boolean mask over library spectra to hide (simulation); exclude_sid/exclude_lib:
-    representatives to hide for the analog channel; drop_pid: remove this pool entry (class-3 sim).
-    """
-```
-
-| 钩子 | 作用 | 对应我们想模拟的"泄漏" |
-|---|---|---|
-| `exclude` | 布尔掩码，**按库谱**隐藏（2.54M 行里把该结构自己的谱置 True） | 库检索通道看不到答案 |
-| `exclude_sid` / `exclude_lib` | 从**类似物通道**里隐藏该结构的代表谱 | analog 传播看不到答案 |
-| `drop_pid` | 从池窗口里移除该条目（作者注释：*class-3 simulation: the hidden truth may be generated*） | 池里没有答案，但**生成通道仍可造出它** |
-
-⇒ **三个泄漏面（库 / 类似物 / 池）各有一个专门的开关**，而且是**每次调用的参数**，
-不是要重建的数据集。**A 的成本从"重建资产"降到"改一次调用"。**
-
-**顺带解释了一件旧事**：团队早期的 V_A_hard（得 0.0476，被判"不可能"）是**自己动手重建库**
-来移除答案的——与引擎自带的模拟路径不是一回事。作者显然预见到了这个需求，
-而我们的早期实现绕过了它。这也说明 `PLAYBOOK.md` 早期那句"V_A_hard 不可能"
-应当作废：**正确做法一直存在于引擎里。**
-
-### A 的落地设计（成本已明确）
-
-回测 kernel = V44 notebook 的三处改动：
-
-1. **`COMP` 指向合成出来的"测试集"**：从 `folds.parquet` 取某一折、`regime == 'other'` 的结构，
-   用它们在 `train.parquet` 里的谱拼出一个 `test.parquet`（列名与竞赛一致）；
-2. **每个查询调 `E.run(..., exclude=mask, exclude_sid=sid, exclude_lib=lib, drop_pid=pid)`**，
-   把三个泄漏面同时关掉；
-3. **末尾算 MRR@25**（`rank of first candidate whose key == 留出结构的 key`），
-   并按折/按来源分档输出——诊断口径与 `ranker.py` 的 `mrr_at(k=25)` 一致。
-
-**上界与已知风险**：
-- 分辨率（配对比较）±0.0006~0.0018 —— 与榜分同量级；
-- **真正的风险是分布匹配**：`other` 档与隐藏集是否同分布未经证实，需一次榜分抽查；
-- 计算量：一折 ~9,500 查询 × 引擎全流程，比 400 分子的正式运行大一个量级 ⇒
-  大概率要降采样（例如每折取 1,500~2,000 个查询，se 仍 ≈0.003，配对后 ~0.001）。
-
-### ⚖️ 组件 1 已完成，并暴露一个必须解决的矛盾：**统计量 ↔ 运行时**
-
-`scripts/build_backtest_queries.py` 已建出查询集（fold 0 / regime `other`，
-`data/processed/backtest_fold0_other.parquet`）：**2,000 个分子 / 16,311 张谱**，
-列名与类型**逐列 cast 到 `test.parquet` 的参考 schema**（不是手写列名），并断言
-"每个留出结构都有谱、没有结构因清峰而丢失"。真值表另存。
-
-**但算一下运行时和分辨率，会发现它们打架**：
-
-| 查询数 | 相对正式运行(400) | 估算运行时* | 配对 se（10% 查询受影响，\|Δ\|≈0.3） |
-|---:|---:|---:|---:|
-| 400 | 1× | ~2 h | ±0.0063 |
-| 2,000 | 5× | **~10 h ✗ 超限** | ±0.0028 |
-| 9,500（整折） | 24× | 不可行 | **±0.00097** |
-
-\* 引擎的通道阶段约 2,012 s 对应 400 分子；ICE/GL 预算虽固定，但特征计算按分子线性增长。
-
-⇒ **要达到 ±0.001 需要约 9,500 个查询，而 9,500 个查询跑不完。** 这是 A 的真实约束，
-不是样本量不够，而是**样本量够的时候算力不够**。
-
-**解法：按策略类型分两层。** 关键在于——**贵的是 ICEBERG/GLACIER 两个前向模型，
-而大多数候选策略（合并槽位、CLAW 门控、池流行度、尾槽、生成容量）根本不碰它们。**
-
-| 层 | 配置 | 查询数 | 配对 se | 用来筛什么 |
-|---|---|---|---|---|
-| **Tier 1（廉价）** | **关掉 ICE/GL**（预算置 0） | ~9,500（整折） | **±0.001** | 一切**不依赖前向模型**的策略——含 CLAW、合并、流行度、槽位、生成容量 |
-| **Tier 2（完整）** | ICE/GL 按比例放大预算 | ~800（2× 正式） | ±0.0045 | 只用于**依赖 ICE/GL 的策略** |
-
-**这个分层是被数字逼出来的，不是设计偏好**：如果一上来就把 ICE/GL 打开跑 9,500 个查询，
-既跑不完、也测不准。而先做 Tier 1，能覆盖我们绝大多数候选项。
-
-**⚠️ Tier 1 的已知偏差**：关掉 ICE/GL 会改变尾部的排序（它们原本会重排第 2–25 名），
-所以 Tier 1 给出的**绝对** MRR 会低于完整流水线。但**配对比较不受影响**——
-只要两个策略在同一层里比，差值仍归因于策略本身。**这条要在报告里写明，避免把 Tier 1 的
-绝对分数当成"我们的流水线在无泄漏条件下能拿多少"。**
-
-### ✅ 组件 2 的接线已核对（三个索引空间，逐行读 `library.py` / `engine.py` 确认）
-
-回测最容易错的地方是**三个钩子各自活在哪个索引空间里**，写错了不会报错、只会静默地不排除。
-逐行核对结果：
-
-| 钩子 | 索引空间 | 长度 / 来源 | 是否每次调用都要重建 |
-|---|---|---|---|
-| `exclude` | **库谱**（不是结构、不是代表谱） | `len(L.sid)` = 2,539,608 | ❌ 一次调用一个布尔数组，改几行即可复用 |
-| `exclude_sid` / `exclude_lib` | **结构 id** + **库序号** | `L.sid` 取值 / `L.lib` 取值 | ❌ 两个整数 |
-| `drop_pid` | **候选池**条目 | `struct_key[sid]` → `pool.key` 的下标 | ❌ 一个整数 |
-
-**关键的两条实现事实**（决定了它便不便宜）：
-
-1. `Library.window(..., exclude, ...)` 里是 `c = c[~exclude[c]]`，而 `c` 来自 `self.order`，
-   即**库谱下标** ⇒ `exclude` 是长度 2,539,608 的布尔数组。**若误以为是"按结构"的掩码
-   （275,810），长度不匹配会直接抛错**——这条不会静默失败，算幸运。
-2. `Engine.analogs` 用的是 `rep = self.rep`——**代表谱集在引擎初始化时建一次并缓存的**，
-   每次调用只是 `keep &= ~exclude[ridx]`（对窗口内的切片）⇒ **逐查询排除不会触发重建**。
-   如果它每条查询都重建代表集（2.5M 行的 lexsort），9,500 个查询根本跑不完。
-
-⇒ **结论：逐查询的排除在计算上是便宜的**，Tier 1 的 9,500 查询方案在实现层面站得住。
-
-**待写的实现（组件 2 的剩余部分）**：
-
-```python
-excl = np.zeros(len(L.sid), bool)                      # 复用同一个数组
-for q in queries:
-    excl[:] = False
-    excl[np.isin(L.sid, held_sids_of(q))] = True       # 只改该结构自己的谱
-    C, X, info = E.run(spectra, target,
-                       exclude=excl,
-                       exclude_sid=sid_of(q), exclude_lib=-1,
-                       drop_pid=pid_of(q))
-    C, X, info = V.run(...) 之后照 V44 的 cell 17/19/21 继续（ICE/GL、RRF、merge）
-    rank = 第一个 key == 留出结构 key 的位置
-```
-
-### 组件 4 的校准设计（**在跑之前**写死，否则"回测可信"会变成事后判断）
-
-A 的价值完全取决于一件事：**它能不能正确排序配置**。所以在用它筛任何策略之前，
-必须先用**已知量级差异**的配置去校准它。三个配置已建好（`--degrade`）：
-
-| 配置 | 构造 | 预期 | 角色 |
-|---|---|---|---|
-| `bt` | V44 原样 | 基准 | 参照 |
-| `bt_top1` | 候选列表截到 **1 个** | **大幅下降** | **结构性检查**：只剩 rank-1，MRR 应塌成 top-1 准确率 |
-| `bt_no_ice` | `ICE_LAM=0, ICE_BUDGET=0, ICE_PC=False` | 略降 | **量级检查**：公开账本记 ICE/GL 权重值 +0.007 |
-
-**证伪条件（写死）**：
-
-```
-若 bt_top1 ≥ bt            ⇒ 回测连"只有一个候选"都测不出来 ⇒ A 立即作废
-若 bt_no_ice > bt          ⇒ 前向模型权重为负贡献, 与公开账本矛盾 ⇒ 回测不可信
-若 bt_no_ice ≈ bt (±0.002) ⇒ 无法判定 ⇒ 只当作"未通过量级校准", A 降级为仅结构性可用
-```
-
-**必须承认的一个弱点**：三个配置是**三个独立 notebook**，所以要跑三次 Kaggle 运行，
-而**跨运行的比较是不配对的** ⇒ 单次 400 查询的 se ≈ 0.0063，**比 `no_ice` 要找的 0.007 还大**。
-所以 `no_ice` 只能做**符号检查**，不能做量级检查。
-
-**而策略之间的比较（A 的真正用途）是在同一个 notebook 内配对的**——它们共享同一次引擎输出、
-只是后处理不同 ⇒ 配对 se ≈ ±0.001。**这正是 A 的用法与它的校准方式不同的地方，不能混为一谈。**
-
-⇒ 因此组件 4 的判据是：**`bt_top1` 必须显著低于 `bt`（结构性），外加 `no_ice` 不为正（符号性）。**
-满足这两条，A 就可以用来做配对策略比较；不满足，就停。
-
-### ⚠️ A 无法消除的一类泄漏：**模型级泄漏**（必须写在结论里）
-
-引擎的三个数据面（库 / 类似物 / 池）可以用 `exclude` / `exclude_sid` / `drop_pid` 关掉，
-**但公开模型是在 train 上训练的，而我们的留出结构也在 train 里**：
-
-| 组件 | 是否见过留出结构 | 后果 |
-|---|---|---|
-| FPNet（v4b / v3 的 A+B） | **见过** | 可能"认出"留出结构 ⇒ 分数偏乐观 |
-| ranker（160 特征 × 4 GBM） | **见过**（训练行来自 train） | 同上 |
-| ICEBERG / GLACIER | **见过**（前向模型在 train 上训） | 同上；**Tier 1 关掉它们，可缓解** |
-| PubChem tier 通道 | 间接（结构可能在 tier 里） | tier 无谱，不能按谱检索 ⇒ 泄漏弱 |
-
-**⇒ 我们无法把留出结构从公开模型里"删掉"**（那需要重训，而重训又需要作者那份不在公开包里的
-`split.parquet`）。所以：
-
-> **A 给出的绝对 MRR 是乐观的，不能读作"我们的流水线在真正新颖分子上能拿多少"。**
-
-**这对它的用途影响多大**：
-- **配对策略比较受影响较小**——两个策略共用同一批（同样被泄漏的）模型，
-  差值主要来自后处理规则本身；
-- 但**若某策略专门利用"被记住的"信息**（例如把 PubChem 候选提到 rank 1 的 CLAW，
-  或任何依赖模型置信度的门控），泄漏会让它看起来比实际更好。
-
-**处理方式**：把 A 当作**排序工具**（策略之间谁更好），不当作**水平工具**（我们能拿多少分）。
-任何 A 里胜出的策略，**最终仍必须用榜分确认**——这也正是 §9 分层判读规则存在的原因。
-
-### ✅ 折定义已对齐（曾出现"两个不同的 fold 0"）
-
-自查发现：`build_leakfree_folds.py` 用了 `groupby(..., sort=False)`（首次出现顺序），
-而回测 kernel 在 notebook 内只能用默认的 `sort=True` ⇒ **两份"fold 0"大小相同（都是 9,477）
-但成员不同**，而且不会报错。
-
-⇒ 已把折生成脚本改成默认排序，重新生成 `folds.parquet`，
-并**逐个核对 15 个（折 × 档）格子全部一致**：
-
-```
-all 15 fold x regime cells identical: True
-```
-
-**为什么必须对齐**：否则文档里写的"fold 0"与回测实际用的"fold 0"是两个不同的集合，
-任何跨实验的对比都会静默错位——而两边的大小一样，从数字上看不出任何异常。
-
-### ✅ 合成 COMP 的覆盖面已审计（不靠目测）
-
-把 notebook 里**每一处从 `COMP` 读文件**的地方列出来，逐一核对合成目录里有没有：
-
-| 读取点 | 文件 | 合成目录里有吗 |
-|---|---|---|
-| cell 5 | `train.parquet` | ✅ 软链到竞赛数据 |
-| cell 5 | `test.parquet`（读真件以取列名） | ✅ 真件此时 `COMP` 尚未改指 |
-| cell 7 | **`sample_submission.csv`** | ✅ 已合成——**这是最容易被忽略的一处**：cell 7 在 `COMP=SM` 之后读它，缺了就会在跑了一小时后崩 |
-
-其余 `/kaggle/input/**` 的 glob 都是找数据集（rdkit wheel、fpnet_full1、eng_runner 的
-`ROOTS`），不是 `COMP`，不受影响。
-
-**另外审计了"被替换掉的 cell 5 有没有留下悬空全局"**：原 cell 5 定义了
-`_sig / _te / _full / _keep / SMOKE_N / IS_RERUN / ICE_BUDGET`，我的替换版只保留后两个。
-逐个检查"是否被后续 cell 使用"⇒ **没有任何悬空引用**（`ICE_BUDGET` 只在 cell 17 用，而它被保留了）。
-
-⚠️ **我的检查器先报了一次假警报**：`ICE_BUDGET` 是以 **tuple 解包**赋值的
-（`IS_RERUN, ICE_BUDGET = True, 300`），而我第一版只收集 `ast.Name` 目标、漏掉 `ast.Tuple`，
-于是把"已定义"误报成"悬空"。**修正检查器后才得到上面的结论**——
-这也是同一类教训：**用于验证的工具本身要先被验证**，否则会浪费时间去"修"一个不存在的问题。
-
-### 🔴 更正 4：Tier 1 的"9,500 查询"**跑不完**——我之前只算了通道阶段
-
-上面那张表把 Tier 1 写成"整折 9,500 查询 ⇒ ±0.001"。**那是错的**：我只按**通道阶段**
-（`pubchem channel: 2,012s / 400 分子`）外推，忘了通道只是整条流水线的一部分。
-
-用**实测的整轮时长**重算：
-
-| 量 | 值 | 依据 |
-|---|---|---|
-| 一次 400 分子运行的墙钟 | **~7,200 s（2 h）** | 本仓库 `ctl` 批量运行的实际耗时区间（2.0–2.8 h） |
-| 每分子 | **~18 s** | 7,200 / 400 |
-| 9 h 上限内可跑分子数 | **≈1,800** | 32,400 / 18 |
-
-⇒ **整折（9,500）需要约 47 小时，超限 5 倍以上。** 关掉 ICE/GL 能省掉约
-900 s/轮（300 s ICE + 600 s GL），即每分子降到 ~15.7 s ⇒ 上限约 **2,060** 个分子。
-
-**修正后的可行配置**：
-
-| 层 | 配置 | 查询数 | 配对 se（f=10%） | 说明 |
-|---|---|---|---|---|
-| Tier 1 | ICE/GL 关 | **~2,000** | **±0.0021** | 上限约 2,060，取 2,000 留余量 |
-| Tier 2 | ICE/GL 开 | **~1,200** | ±0.0027 | 上限约 1,800，取 1,200 留余量 |
-
-⇒ **A 的真实分辨率是 ±0.002，不是我先前说的 ±0.001。** 与榜分的三位小数同量级，
-**但不再"更好"**。这仍然比"每 5 小时测 1 个策略"强得多（一次运行内可配对数个策略），
-只是我必须把预期从"优于榜分"下调到"与榜分相当"。
-
-**错因（与前面几次同类）**：我拿**局部阶段**的耗时去外推**整条流水线**的能力，
-而没有用端到端的实测墙钟。**一个组件的成本不等于系统的成本。**
-
-### 🔴 更正 5：更大的查询集会**静默饿死 ICE/GL**——分层不能只按"关/开"分
-
-顺着上一条继续算，发现一个更隐蔽的问题：**`ICE_BUDGET` / `GL_BUDGET` 是固定的墙钟上限，
-不随分子数缩放。**
-
-| 查询数 | ICE 预算 | 实际覆盖 | 与真实运行（400 分子 / 71 个被覆盖）比 |
-|---:|---:|---|---|
-| 400 | 300 s | ~71 个分子 | **一致** ✅ |
-| 2,000 | 300 s | ~71 个分子 | **覆盖率掉到 1/5** ❌ 测的是另一条流水线 |
-
-⇒ **只要 ICE/GL 开着，查询数就必须停在 400**；否则我不是在测"同一个系统在更多分子上"，
-而是在测"一个前向模型被饿死的系统"。**这个错误不会报错，只会让基线数字变得无法解释。**
-
-**把预算按比例放大也救不了**：2,000 查询若要维持覆盖，需 `ICE_BUDGET≈1,500` +
-`GL_BUDGET≈20,000` ⇒ 光这两项就 6 h，加上其余阶段共约 12 h，**超 9 h 上限**。
-
-**⇒ 结论：忠实性与统计功效不可兼得。** 所以分层不是"关/开"，而是：
-
-| 用途 | 配置 | 查询数 | 配对 se | 为什么这样配 |
-|---|---|---|---|---|
-| **校准**（组件 4） | `bt` / `bt_top1` / `bt_no_ice` | **400** | ±0.0047 | 必须与真实运行的阶段行为一致，否则校准本身没意义 |
-| **Tier 1 筛策略**（主力） | `--degrade no_ice` | **2,000** | **±0.0021** | ICE/GL **按构造关闭**，不存在饿死问题 |
-| **Tier 2**（ICE/GL 相关策略） | `bt` | **400** | ±0.0047 | 只能承受 400 个查询，功效差但行为忠实 |
-
-**默认 `--limit` 保持 400**，Tier 1 用 `--limit 2000 --degrade no_ice` 显式指定。
-
-## 10. 无泄漏回测（方法 A）：折已建好，但测出一个硬约束
-
-**动机**：真正的瓶颈不是缺想法，而是**每周只能测 6 次、每次只得到一个三位小数**。
-任何需要扫阈值的方法（CLAW 门控、tier 准入）在这个吞吐下都做不了。
-所以先把测量能力做出来，再谈方法。
-
-**已经做完的第一步**：`scripts/build_leakfree_folds.py` 从 `train.parquet` 建出
-**结构不相交 + 按来源分档**的折定义（`data/processed/folds.parquet`），并断言了三条不变量
-（每个结构恰好一个折、折在 **inchikey14** 层不相交而非行层、每个折都带各档样本）：
-
-```
-rows 2,539,608   unique structures 275,810   fold sizes 55,161–55,163
-regime: syn 228,179 | other 47,381 | np 250
-```
-
-### 🔴 但它同时测出一个硬约束：**`np` 档只有 250 个结构**
-
-`enveda-np-examples`（最像隐藏集化学的那一档）在全部 275,810 个结构里**只有 250 个**，
-五折下来每折 **50 个查询**。按 MRR 的标准差约 0.4 估，**每折的标准误 ≈ 0.057**——
-比我们要找的 +0.002 效应**大 28 倍**。
-
-⇒ **"用天然产物档做无泄漏回测"这条路，样本量上就不成立。** 不是方法错，是数据不够。
-
-**剩下的选项**（都更弱，但可行）：
-
-| 留出档 | 结构数 | 每折查询 | 标准误（估） | 分布匹配度 |
-|---|---|---|---|---|
-| `np`（enveda-np-examples） | 250 | 50 | ±0.057 | 最好，但**测不了** |
-| `other`（gnps/mona/massbank/riken/msdial/spectraverse/masaryk） | 47,381 | ~9,500 | ±0.004 | 中等——这些是**策展过的真实化合物**，相当一部分本身就是天然产物 |
-| `syn`（enveda-180/pluskal_ms2/drug_plus） | 228,179 | ~45,600 | ±0.002 | 差——合成/通用库，与隐藏集化学相差最远 |
-
-⇒ **有意义的回测只能用 `other` 档**（±0.004 勉强能分辨 +0.002 的效应，但仍在边缘），
-而它的分布匹配度是中等、**未经证实**。
-
-**这一步的价值在于它是"先测仪器、再建仪器"**：如果我先花几天把回测框架搭起来，
-再发现可用样本只有 50 个/折，那几天就白费了。现在这条约束是在**写脚本之前**、
-用一次 30 秒的本地统计拿到的。
-
-**结论（对方法选择的影响）**：方法 A 仍然可能是对的，但它的**分辨率上限是 ±0.004**，
-不足以单独判定 +0.002 的改进——它可以用来**筛掉明显无效的候选**（省下 5 小时/次），
-但**最终判定仍必须回榜分**。这比"建一个本地 LB 就能离线迭代"的预期弱得多，
-所以 A 的收益要按"筛子"而不是"替代品"来估。
-
-### 🔴 更正 3：上面那段分辨率估算算错了，方法 A 比我说的**好得多**
-
-我把 **每折** 的标准误（±0.004）当成了方法 A 的分辨率。但 5 折 CV 是**按结构**分的，
-每个留出结构**恰好在一折里被留出**一次 ⇒ 把五折的留出预测**汇池**起来，就是对全部
-47,381 个查询各得到一个预测。真正该看的是汇池后的量级：
-
-$$\text{se} = \frac{0.4}{\sqrt{47{,}381}} \approx 0.0018$$
-
-而且更重要的是：**比较两个策略时应该用配对比较**（同一批查询、同一批折），
-看的是**差值**的标准差，不是各自的：
-
-| 情形 | 差值标准差（估） | 汇池后的 se |
-|---|---|---|
-| 两策略在 10% 的查询上不同，每处 \|Δ(1/rank)\| ≈ 0.4 | 0.4·√0.1 ≈ 0.126 | **±0.0006** |
-| 在 30% 的查询上不同 | 0.4·√0.3 ≈ 0.22 | ±0.0010 |
-| 在 100% 的查询上不同（极端） | 0.4 | ±0.0018 |
-
-⇒ **方法 A 作为"配对比较"时，分辨率约 ±0.0006~0.0018，与榜分（三位小数）同量级甚至更好**，
-而且**一次运行可以同时评估多个策略**（后处理型变体共享同一批引擎输出）。
-我上一轮把它定性为"只能当筛子"是**基于错误的算术**。
-
-**但换了一条真正的限制**（这条没有变）：样本量不再是问题，**分布匹配度才是**。
-`other` 档（gnps/mona/massbank/riken/…）是策展过的真实化合物，与 Enveda 的隐藏集
-（天然产物及其类似物）**是否同分布，未经证实**。所以方法 A 能可靠回答的是
-"**在这个分布上**哪个策略更好"，它能否迁移到隐藏分布，仍需榜分做最终确认。
-
-⇒ **修正后的定位**：A 是**高分辨率、低成本的策略筛选器**（配对比较 ±0.001），
-不是"筛子"。它的风险从"测不准"变成了"测的不是同一个分布"——而后者只花一次榜分就能抽查。
-
-### ⚠️ 更正 2：`claw` 不是一个干净的单变量实验（差异已逐行核对）
-
-用 `scripts/diff_variant.py` 对比 `notebooks/v45/claw` 与 `notebooks/v44_base`：
-**33 个 cell 里改了 3 个（cell 3 / 9 / 19），全部是代码 cell；30 个逐字节相同。**
-架构主干（v4b 引擎 + `fpnet_full1`、双 ranker 引擎 + PairTail、ICEBERG/GLACIER、RRF、
-champion 锁、25 槽结构、14 个数据集）**全部未动**。
-
-但改动的三件事**都作用在同一个分支上**，所以结果无法归因给 CLAW 本身：
-
-| # | 改动 | 影响 |
-|---|---|---|
-| 1 | v17 popularity 补丁 | **改变 tier 候选列表**（`z(f.z)+0.25·流行度` 排序 + 按流行度扩大 pass 1 并集） |
-| 2 | `rel` 由 `pc_fz[0]` 改为 `fz_top` | **aggressive/gentle 的槽位选择可能翻面**（必需——补丁改变了 `pc_fz` 的含义——但它是第二个行为改动） |
-| 3 | `promote()` 门控 | 高置信时把 tier 候选提到 rank 1 |
-
-⇒ **分数变了也不能说"CLAW 有效"。** 我此前的预注册把 `claw` 当成"单变量 + 有诊断"，
-这个假设是错的（诊断那半已在上一节更正）。
-
-**若要干净的单变量**，正确顺序是先只上补丁（候选列表变、rank 1 不动），再叠加提升。
-**这需要新变体，已按"冻结变体创建"的决定暂停**，等 `claw` 结果出来后再定。
-
-**另注**：**公开数据批量运行上 `claw` 的输出应当与 `ctl` 逐字节相同**（门控恒跳过），
-所以那次运行能验证"管子通不通"，但**不能**验证补丁或 CLAW。
-
-## 9. 预注册预测（在结果到达**之前**写下，防止事后合理化）
-
-三个变体已排队、即将开跑。先把预测与"什么算证伪"写死：
-
-| 变体 | 预测 | 依据 | 若结果为 0，说明什么 | **什么算证伪** |
-|---|---|---|---|---|
-| `claw` | **+0.000 ~ +0.005** | 公开账本声称 +0.024~0.043；但 v27（带 CLAW）与 V44（无 CLAW）同为 0.417 | 门控太严（`S>6 ∧ pop≥5` 极少触发），**不等于 CLAW 无价值** | 若 `merge stats` 的 `promoted` ≫ 0 而分数不动 ⇒ **CLAW 机制本身无效**（这才是否定证据） |
-| `icefull` | **0.000 ± 0.002** | v17/v27 用 ICE 5400 拿 0.417，我们用 300 也拿 0.417 ⇒ ICE 覆盖差不解释分数差 | ICE 对尾部无实质贡献 | 若分数**下降** ≥0.002 ⇒ ICE 重排在有害地扰动尾部 |
-| `pop30` | **+0.000 ~ +0.004** | 作者自列 "+0.002 per 0.15"，即 +0.003~0.005 | 该先验在实际候选上不具区分度 | 若分数下降 ⇒ 池流行度与被选为答案负相关（不太可能） |
-
-**关键的方法论点**：`claw` 的"0 结果"**有两种完全不同的含义**，而它们只能靠诊断区分：
-
-```
-promoted == 0            ⇒ 门控太严, CLAW 根本没被测试 → 应扫 S_TAU 再判断
-promoted >> 0 且 分数不变 ⇒ CLAW 真的无效            → 可以彻底放弃这条线
-```
-
-### ⚠️ 更正（结果到达前自查发现的缺陷）：`promoted` 在批量运行里**必然是 0**
-
-我原本打算从批量运行的日志读 `promoted`。**这是错的**，原因是：
-
-- 批量运行跑的是**公开 test**，而公开 test 的 1,213 张谱全部逐字来自 train
-  ⇒ 每个分子的 `lib_max ≈ 1.0`（原始 V44 公开运行实测 `merge stats {'untouched': 400}`）；
-- `promote()` 与整个 merge 分支**位于 `lib_max < LIB_TAU(0.9)` 的 else 分支内**；
-- ⇒ 公开数据上该分支**从不执行**，`promoted` 恒为 0，**与 CLAW 是否有效无关**。
-
-所以下面这条诊断链里，**只有第一项是有效的**：
-
-| 诊断 | 是否有效 | 原因 |
-|---|---|---|
-| `V45 pop-align: pc_lsid=N pc_mass=M OK\|MISALIGNED` | ✅ | 在 `init_worker` 里，**不依赖门控**，一定执行 |
-| `merge stats` 的 `promoted / aggressive / gentle` | ❌ | 公开数据上门控恒为"跳过"，必然全 0 |
-
-**后果**：若 `claw` 拿到 0.417，我们**无法**从日志区分"门控太严（没测到）"与"机制无效"。
-这个区分需要另一个变体：**`claw_force`（已建好）绕过 `lib_max` 门控**，让合并/提升分支在公开数据上
-也执行，从而在批量日志里产生非零的 `aggressive/gentle/promoted` —— 那是**接线验证**，
-不是效果验证。
-
-**这不影响 `claw` 的分数本身**：隐藏重跑上门控是开着的（§0.10 已由引擎源码确认），
-所以分数仍然有效；受影响的只是"0 结果"的**可解释性**。
-
-### ✅ 更正 2 的补救：用提交**字节数**判断合并分支有没有真的执行
-
-我们**下载不到**隐藏重跑的提交文件（`submissions.download` 返回 403），但**提交记录里有
-`totalBytes`**。而 ctl 的隐藏提交字节数是已知的——就是作者那次 0.417：**530,716 字节**。
-
-于是得到一个免费的两分判别器：
-
-| `claw` 的 `totalBytes` | 结论 |
-|---|---|
-| **≈ 530,716**（一致） | 合并分支**几乎肯定从未执行** ⇒ `lib_max ≥ 0.9` 在隐藏集上也成立 ⇒ **§0.10 的推理错了**，PubChem 通道对全体是死重量，CLAW 这条线整条作废 |
-| **明显不同** | 分支确实执行了、输出确实变了 ⇒ 若分数仍为 0.417，那才是"**改动生效但没用**"的可执行结论 |
-
-**为什么这能成立**：补丁改变了 tier 候选的**排序**（`z(f.z)+0.25·流行度`）与 pass-1 并集，
-而合并分支把这 5 个候选放进槽位——候选不同 ⇒ SMILES 长度不同 ⇒ 字节数不同。
-公开数据上门控恒跳过，所以**批量运行不会有这个信号，只有隐藏提交的 `totalBytes` 有**。
-
-**它不能告诉我们的**：具体有多少个分子被提升（`promoted` 的精确值仍然拿不到）。
-但它能把最关键的二元问题——**门控到底开没开**——从"无法判定"变成"看一个数字"。
-
-⇒ **`claw` 结果到手后，第一件事是对比 `totalBytes`，不是看分数。**
-
-### 这个判别器的两条前提（先写下来，免得事后过度解读）
-
-**前提 1：需要一个"没有改动"的参照字节数，而它只能借。** 我们**没有提交过 ctl**（撤销了），
-所以用的参照是作者那次 0.417 的 **530,716 字节**。严格说，我无法证明
-`scriptVersionId=355245043` 与我拉取的那份内容**逐字相同**（该 ID 无法直接拉取，见 §0 的取证记录）。
-⇒ 参照值带一个**未消化的不确定性**。
-
-**前提 2：自然波动有多大，有第二个数据点可以参考。** gengsr 复现（giaok246，**另一个 notebook**）
-在同一隐藏集上是 **532,444 字节**。两个不同实现相差 **1,728 字节**。
-
-⇒ 所以判读不能是"只要不一样就算门控开了"，而应该是：
-
-| `claw` 的 `totalBytes` | 判读 |
-|---|---|
-| 落在 **530–533 KB** | 与"未改动"无法区分 ⇒ 门控大概率没开 |
-| **明显超出**该区间（比如 ±10 KB 以上） | 分支确实执行了 ⇒ 分数才有"生效但没用"的含义 |
-
-机制上的量级估计：合并分支若在多数分子上触发，每个分子会换掉最多 5 个 tier 候选
-（400 分子 ⇒ 最多约 2,000 个候选被替换，每个 ~50 字节）⇒ 量级在 **~100 KB**，
-远大于 1.7 KB 的自然波动。**所以这个判别器在机制上是够灵敏的**——前提 1 才是它的软肋。
-
-**教训（与前面三个静默 bug 同类）**：我在预注册时把"诊断能区分两种含义"当成了既成事实，
-**却没有检查那条诊断在批量运行的数据上是否可能取到非零值**。诊断本身也需要被验证——
-否则它只是让人误以为结果可解释。
-
-这正是我在 `claw` 里加 `stats['promoted']` 计数与 `pop-align` 钩子的原因——**没有它们，
-这个实验无论结果如何都无法得出结论**。而 `promoted` 能不能被读到，又取决于"批量运行日志可读"
-这一条（已由自动化采集覆盖）。
-
-同理，`icefull` 的 0 结果与 `pop30` 的 0 结果都各有两种含义（真无效 vs 静默损坏），
-两者的诊断都已放进各自的运行日志（`ICE meta` / `V45 POOL_POP prior DISABLED`）。
-
-**结论**：本轮三个实验的设计目标不是"提高命中率"，而是**保证无论结果如何都能得出结论**。
-
-## 8.6 把 0.417 拆成"召回"和"排序"两部分（首次拿到锚点）
-
-在公开的 ranker 训练行上（`prvsiyan/casmi26-ranker-features`，CC0）跑了一次**按查询分组**的
-5 折交叉验证（`scripts/train_ranker_probe.py`，纯本地 CPU、无 GPU 配额）：
+A **query-grouped** 5-fold cross-validation on the public ranker's training rows
+(`prvsiyan/casmi26-ranker-features`, CC0) via `scripts/train_ranker_probe.py`, pure local CPU,
+no GPU quota:
 
 ```
 rows=142,762  features=31  groups=819  positives=1,638 (1.15%)
-groups containing >=1 positive: 819/819 = 100.0%      <-- 这份数据里真值恒在候选集中
+groups containing >=1 positive: 819/819 = 100.0%      <-- truth is always in the candidate set here
 candidates/group: median 104, min 2, max 1352
 group-wise CV:  MRR@25 = 0.7649   top-1 = 0.6886   hit@25 = 0.9512
 ```
 
-**关键点：这份模拟数据里 100% 的组都含正例**，也就是**召回率被人为设成 1.0**。在这个前提下
-排序只能拿到 **MRR@25 = 0.765**，而真实榜分是 **0.417**。
+**The key point: 100% of groups contain a positive in this simulated data**, i.e. **recall is
+artificially fixed at 1.0**. Under that condition ranking reaches only **MRR@25 = 0.765**, while
+the real LB is **0.417**.
 
-于是得到第一个可信的分解（用 `score ≈ recall@25 × E[1/rank | 命中]` 反解）：
+Hence the first trustworthy decomposition (back-solving with
+`score ≈ recall@25 × E[1/rank | hit]`):
 
-| 量 | 估计值 | 含义 |
+| Quantity | Estimate | Meaning |
 |---|---|---|
-| `E[1/rank \| 真值在前 25]` | ≈ 0.765 | 来自上表的条件排序质量 |
-| `recall@25`（真实隐藏集） | ≈ **0.545** | 反解：0.417 / 0.765 |
-| ⇒ **约 45% 的隐藏分子，真值根本进不了前 25** | | |
-| ⇒ 总头寸 | | 两者各约一半 |
+| `E[1/rank \| truth in top 25]` | ≈ 0.765 | conditional ranking quality from the table above |
+| `recall@25` (real hidden set) | ≈ **0.545** | back-solved: 0.417 / 0.765 |
+| ⇒ **about 45% of hidden molecules never get their truth into the top 25** | | |
+| ⇒ total position | | the two halves are roughly equal |
 
-**两个结论**：
+**Two conclusions**:
 
-1. **瓶颈不只是排序，召回同样是一半。** 此前我按"头部占 0.30–0.35"只盯着 rank 1，那只覆盖了
-   排序这一半；**召回这一半（约 0.19 的分）此前完全没有被当成独立目标**。
-2. **结构池这条召回通道已实测关闭**（§3.6 第 2 条：LOTUS/NPAtlas 只多 373 个结构）。
-   所以**唯一还能扩召回的通道就是 PubChem tier**（7.2 GB，150–1250 Da，远超池的 77 万结构），
-   而它现在只被允许占 5 个尾槽。
+1. **The bottleneck is not only ranking; recall is half of it.** I had been fixated on rank 1
+   following "the head is 0.30–0.35", which covers only the ranking half; **the recall half
+   (~0.19 of the score) had never been an explicit target.**
+2. **The structure-pool recall route is closed by measurement** (§11 item 2: LOTUS/NPAtlas add
+   only 373 structures). So **the only channel that can still expand recall is the PubChem tier**
+   (7.2 GB, 150–1250 Da, far beyond the pool's 775k structures), and it is currently allowed only
+   5 tail slots.
 
-⇒ **这反过来把 `pc_aggressive`（尾槽加倍）和"放宽 CLAW 门控"从尾部小改提升为召回主线。**
-这是我第一次能给"PubChem 通道该占多大份额"这个问题一个定量理由。
+⇒ **This promotes `pc_aggressive` (double the tail slots) and "loosen the CLAW gate" from tail
+tweaks to main-line recall work.** It is the first time I can give a quantitative argument for
+"how large a share the PubChem channel should get".
 
-**⚠️ 必须记住的局限**：0.765 来自**模拟**行，而整份数据的召回被设为 1.0，这与真实评测分布不同。
-`nazarmohammed` 的 header 明确警告过：*"simulated remove-the-truth-from-the-database novelty
-experiments can dramatically overestimate real novel-molecule recovery"*。所以
-**0.545 这个召回估计是软的**——它依赖"模拟行的条件排序质量能迁移到真实候选"这一假设。
-它值得当作工作假设，不值得当作结论。
+**⚠️ Limitation that must be remembered**: 0.765 comes from **simulated** rows in which recall is
+set to 1.0 throughout, which differs from the real evaluation distribution. `nazarmohammed`'s
+header warns explicitly: *"simulated remove-the-truth-from-the-database novelty experiments can
+dramatically overestimate real novel-molecule recovery"*. So **the 0.545 recall estimate is
+soft** — it depends on assuming that the simulated rows' conditional ranking quality transfers to
+real candidates. It is worth treating as a working hypothesis, not a conclusion.
 
-### 8.6.1 那 45% 为什么丢？——这决定了该修哪一条通道
+## 10. Why is that 45% lost? — this decides which channel to fix
 
-"召回缺失"有三种成因，**能修它们的手段完全不同**，所以必须先分清：
+"Missing recall" has three causes, and **the available remedies are completely different**, so
+they must be separated first:
 
-| 成因 | 表现 | 可用的手段 | 我们的判断 |
+| Cause | Symptom | Available remedy | Our assessment |
 |---|---|---|---|
-| **A. 真值在池里，但被 TOPN 截掉**（排在 60 名之后） | 引擎算过它，只是没进入下游 | 提高 `TOPN`，让 ICE/GL 有机会把它提上来 | 池窗口内候选仅约 65/分子（ICE 输入 26,155/400），**TOPN=60 几乎不截断** ⇒ 这条基本不成立 |
-| **B. 真值不在池里，但在 PubChem tier 里** | 池 77 万结构中没有它 | 让 PubChem 候选进入更多位置（`pc_tail10` / `pc_aggressive`） | PubChem tier 规模是池的 ~100 倍，**这是唯一还能扩的数据库通道** |
-| **C. 真值不在任何公开结构库里**（Enveda 新颖类似物） | 任何检索都找不到 | **只能靠 analog propagation / Class-3 生成**（引擎的 `generate=True` 通道） | 若隐藏集确有大量"潜在"天然产物，**这条是主体** |
+| **A. Truth is in the pool but cut by TOPN** (ranked below 60) | the engine scored it, it just never reached downstream | raise `TOPN` so ICE/GL can lift it | candidates per pool window are only ~65/molecule (ICE input 26,155/400), so **TOPN=60 barely cuts** ⇒ largely not the case |
+| **B. Truth is not in the pool but is in the PubChem tier** | absent from the 775k pool | let PubChem candidates take more positions (`pc_tail10` / `pc_aggressive`) | the tier is ~100× the pool — **the only database channel that can still expand** |
+| **C. Truth is in no public structure library** (a novel Enveda analog) | no retrieval can find it | **only analog propagation / Class-3 generation** (the engine's `generate=True` channel) | if the hidden set really contains many "potential" natural products, **this is the bulk** |
 
-**关键推论**：如果缺失主要是 **C**，那么给 PubChem 更多槽位也没用——因为那里同样没有这个分子。
-`pc_tail10` 的收益完全取决于 B 与 C 的相对比例，而**我们现在无法从榜分里把 B 和 C 分开**。
+**Key inference**: if the loss is mostly **C**, giving PubChem more slots does not help — the
+molecule is missing there too. `pc_tail10`'s benefit depends entirely on the B:C ratio, and **we
+currently cannot separate B from C from the LB score alone**.
 
-⇒ 因此采用**不对称性最低的那个版本**：`pc_tail10` 只动 16–25 槽，对 A/B/C 三种情形都不会
-损害现有正确候选。它是"能扩就扩"的保守下注，而不是"断定 B 是主体"的激进下注。
+⇒ So we take the **lowest-asymmetry version**: `pc_tail10` touches only slots 16–25, so it cannot
+harm existing correct candidates under A, B or C. It is a conservative "expand if you can" bet,
+not an aggressive "B must be the bulk" bet.
 
-⇒ 同时记下一个**尚未被任何公开方案认真对待**的方向：**C 只能靠 analog/generative 传播**，
-而这正是公开领域最弱、也是我们自己在 `src/casmi/fragments.py`、`pipeline_v2.py` 里做过一部分的那条线。
-它属于建模线，不属于调参线。
+⇒ Also recorded is a direction **no public solution has seriously addressed**: **C can only be
+reached by analog/generative propagation**, which is both the field's weakest line and one we
+have partly built ourselves in `src/casmi/fragments.py` and `pipeline_v2.py`. It belongs to the
+modelling line, not the tuning line.
 
-## 8.5 🔴 公开前沿恰好就是 0.417——我们无法靠"抄"越过去
+## 11. The public frontier is exactly 0.417 — we cannot copy our way past it
 
-扫了这个竞赛**全部 250 个公开 notebook** 的标题/副标题，找任何自报分数 ≥ 0.418 的：
+Scanned the titles/subtitles of **all 250 public notebooks** in this competition for anything
+claiming ≥ 0.418:
 
 ```
 total public notebooks seen: 250
@@ -886,181 +288,72 @@ total public notebooks seen: 250
   none
 ```
 
-公开最高就是 **0.417**（`lehau007/casmi26-sota-v27-zenith-apex-0417`），也就是我们所在的位置。
-**排在 0.418–0.471 的那 59 支队，一份公开代码都没放。**
+The public best is **0.417** (`lehau007/casmi26-sota-v27-zenith-apex-0417`) — precisely where we
+are. **The 59 teams between 0.418 and 0.471 have released no public code.**
 
-### 这对策略意味着什么
+### What this means for strategy
 
-1. **公开设计空间已经在 0.417 附近饱和。** v17/v27（带 CLAW、带 popularity 补丁、ICE 5400）
-   与我们的 V44（无 CLAW、无补丁、ICE 300）**同为 0.417**，就是饱和的直接证据。
-2. 因此**队列里那些"公开空间内的旋钮"（含 `claw`）大概率也落回 0.417**——它们是廉价彩票，
-   值得买，但**不该指望它们跨线**。组合多个子杠杆或许能略高于单杠杆的饱和点，这是唯一的指望。
-3. **要真正越过去，必须有公开代码里没有的东西。** 候选只有三类：
-   更好的模型、不同的候选来源、不同的算法。第二类已被实测关闭（池扩容上限 0.05%）。
+1. **The public design space is saturated near 0.417.** v17/v27 (with CLAW, with the popularity
+   patch, ICE 5400) and our V44 (no CLAW, no patch, ICE 300) **both score 0.417** — direct
+   evidence of saturation.
+2. Therefore **the "within-public-space" knobs in the queue (including `claw`) will most likely
+   land back on 0.417** — they are cheap lottery tickets, worth buying but **not to be counted on
+   to cross**. Combining several sub-levers might edge above the single-lever saturation point;
+   that is the only hope.
+3. **To genuinely cross, we need something absent from public code.** Only three candidate
+   classes exist: a better model, a different candidate source, a different algorithm. The second
+   is closed by measurement (pool expansion ceiling 0.05%).
 
-### 因此新增的"建模线"（与当前的调参线并行）
+## 12. Component diff: our V44 vs the public 0.417 reference (v17 / v27)
 
-公开账本里最大的一根杠杆是**换更好的 FPNet（+0.013）**，而它恰好属于"公开代码里没有的东西"——
-`fpnet_full1` 已经是公开最好的，再往上只能自己训。
+Both score **0.417** but are composed differently. This table answers "what are we missing, and
+what is it worth".
 
-**已量化的商业理由（这一条是决定性的）**：把公开的 ranker 训练特征
-`prvsiyan/casmi26-ranker-features`（CC0，9.6 MB）拉下来实测：
-
-```
-rank_train.npz: X (142,762 × 31) float32 | Y {0,1} mean=0.0115 (1,638 正例)
-                M {0,1} | G 分组 0..818  →  只有 819 个查询组, 平均 174 候选/组
-```
-
-**整个第二引擎的 ranker 只在 819 个查询上训练过**，且每组的正例只有约 2 个。
-而我们手上有 **275,810 个结构 / 2,539,608 张谱**（还能免费用 train 的全部标签）。
-
-⇒ **从 819 个查询扩到上万，是这条线上最实在的原创空间。**这不需要新数据、不需要新架构，
-只需要把训练行的**生成**做对（留出分子的结构与其谱一起从库和池里剔除，再让引擎产出候选与特征，
-用"候选是否等于留出结构"当标签）。这正是 `docs/EXPERIMENTS.md` 里 V-A_hard 那个折想做的事，
-只是当时用在评测而非训练上。
-
-下一步（按成本排序）：
-
-1. **读完 `casmi26-v3-models` 的 `code/`**（下载中，411 MB），确认特征是怎么算出来的、
-   有没有现成的行生成脚本可复用。
-2. **先用公开的 366 MB `megayak/casmi26-simulated-ranker-rows` 做一次"复现式"重训**——
-   目标不是提分，而是**确认我们能训出与公开 ranker 同等水平的东西**（同分布下分数应≈0）。
-   这是后续一切的前置检查：如果连复现都做不到，说明我们漏了训练流程里的某一步。
-3. 再扩查询数重训，作为变体上榜检验。
-
-### ✅ 已完成：v3 引擎代码到手，训练配方已读清
-
-`casmi26-v3-models`（411.9 MB）下载成功，解出 `code/casmi/` 共 13 个模块，含
-**`engine.py`（26.4 KB）**、**`ranker.py`**、**`traindata.py`**、`library.py`、`pool.py`、
-`fpnet.py`、`frag.py`、`spectra.py`、`derive.py`。两个 189.6 MB 的 `fpnet_*.pt`
-与 `ranker_0.pkl`（13.5 MB）也拿到了。**训练流程现在完全可读**：
-
-**① ranker（`ranker.py`）—— 我们的指标就是它自己的指标**
-
-```python
-DEFAULT_PARAMS = dict(objective='lambdarank', learning_rate=0.03, num_leaves=63,
-    min_data_in_leaf=40, feature_fraction=0.7, bagging_fraction=0.8, lambda_l2=1.0,
-    lambdarank_truncation_level=30, label_gain=[0,1])   # rounds=600, seeds=(0,1,2,3) → 4 个 booster
-def mrr_at(pred, y, g, k=25):   # 按 group 的 reciprocal rank —— 与 MRR@25 完全一致
-def cv_report(...):             # "Structure-grouped CV ... MRRs per (regime, fold)
-                                #  plus a calibrated LB estimate"
-```
-
-⇒ 作者是用**按结构分组**的 CV、按 **`regime`** 分档报告 MRR，并且**已经把本地 CV 标定到榜分**。
-`regime`/`fold` 的取值来自 `traindata.py` 的 `holdout_folds=('np','nplib','syn','plusk','twin')`
-——即天然产物 / 天然产物库 / 合成 / pluskal_ms2 等**按来源分档**。**隐藏集若以 `np` 档为主，
-训练权重就该向它倾斜。**
-
-**② FPNet（`traindata.py`）—— 训练目标就是"窗口内排第一"**
-
-```python
-# 正例 = 真实结构在 pool 中的下标；负例 = 同一 ±10 ppm 窗口内随机抽 K=63 个
-def negatives(self, pos): ...
-# 窗口太小时(<8)混入随机 decoy, "so the softmax is not trivial"
-def window_mrr(model, D, ...):  # "MRR@K of the true structure inside its ±10ppm pool window"
-# 增强: 峰丢弃、强度抖动、ppm 抖动 (aug=True)
-```
-
-⇒ **FPNet 与 ranker 都只在"真值在 ±10 ppm 窗口内"这个条件下被优化和评测。**
-这与 §8.6 的分解完全吻合：**这两个模型负责的是排序那一半，召回那一半（真值不在池里）
-从来不是它们的目标。**
-
-**③ 行生成代码不在包里** —— `code/` 只有推理侧模块，`rank_train.npz` /
-`sim_rank_rows_*.npz` 是预生成的产物。所以**我们必须自己写行生成器**；但配方现在是明确的：
-
-```
-for 每个留出分子（按结构留出，用它们的 fold 方案）:
-    C, X, F, names, info = V.run(spectra, target)     # 引擎直接返回 160 特征
-    label[c] = 1 if C.key[c] == 留出结构的 key else 0
-=> (X, y, group=分子) 用 DEFAULT_PARAMS 训 LambdaRank，用 mrr_at 评测
-```
-
-**关键判断**：这条路的上限取决于**"窗口内排序"还能提升多少**——而公开的 ranker 已经用
-600 轮 × 4 seed × 63 叶在这个目标上训过。所以**扩查询数未必能提升窗口内排序**；
-真正的空间更可能在 §8.6 的**召回那一半**（让真值进入窗口），而那要靠 FPNet/池/analog，
-不是靠 ranker。⇒ **建模线的第一刀应该切在召回侧，而不是 ranker 侧。**
-
-### 9.1 由上述推论定出的建模线首个项目：**统一两个候选宇宙**
-
-流水线里其实存在**两个互不相通的结构宇宙**，而它们的能力严重不对等：
-
-| | 池宇宙（pool） | tier 宇宙（PubChem） |
-|---|---|---|
-| 规模 | 710–775k | ~1 亿（7.2 GB，150–1250 Da） |
-| 打分器 | **v4b ranker：160 特征 × 4 GBM × 600 轮** | **只有 `f.z`（指纹点积）+ 流行度** |
-| 进入提交的方式 | 占满 25 槽的主体 | 仅 5 个尾槽（或 CLAW 提升到 rank 1） |
-| 招它的模型是否为它训练过 | 是（`mrr_at` 直接就是本任务指标） | **否** |
-
-**这是 §8.6 那个 45% 召回缺口的直接来源**：不在池里的分子只能寄希望于一个**从未被训练过**
-的通道，而它还被限制在 5 个尾槽里。
-
-⇒ **项目定义**：把 ranker 的特征抽取扩展到 tier 候选（可实现的特征子集：库相似度、FPNet `f.z`、
-分子式匹配、流行度、**ICE/GL 前向分数**——ICE/GL 能给任意 SMILES 打分），然后
-**训练一个统一 ranker 来排序两个宇宙的并集**，让 tier 候选凭证据竞争，而不是靠固定槽位。
-
-**为什么这可能是唯一有真实头寸的方向**：
-- 它是**召回**侧（§8.6 里约 0.19 的分），而不是排序侧；
-- 它针对的是**公开模型从未优化过的通道**（两个公开模型都只在"真值在池窗口内"的条件下训练）；
-- 池扩容已被实测关闭（0.051%），tier 是唯一还能扩的结构来源。
-
-**成本与风险（诚实估计）**：
-- 需要在 Kaggle 上跑"留出分子 → tier 探针 → 特征 → 标签"的行生成，**每个运行都要吃周配额**；
-- 特征抽取要改引擎侧代码，工程量以周计；
-- **上界未知**：如果隐藏集缺失的 45% 里大部分是"任何公开库都没有"的新颖类似物（§8.6.1 的情形 C），
-  那么这个项目也救不了它们——那时唯一的出路是 analog/generative 传播。
-
-**因此它的地位是"待验证的大赌注"，不是"下一步就做"。** 先让当前三个廉价变体给出结果：
-若 `claw`/`pc_tail10` 这类"让 tier 进更多位置"的廉价版本有效，就说明 tier 里确实有货，
-这个项目才值得投入。
-
-**纪律不变**：建模线每一步也要能用榜分检验；在拿到 ≥ +0.002 的可复现位移之前，
-它和调参线一样只是假设。
-
-## 3.7 组件差异表：我们的 V44 vs 公开 0.417 参考（v17 / v27）
-
-两边**都拿 0.417**，但组成不同。这张表是为了回答"我们缺什么、缺的东西值多少"。
-
-| 组件 | v17 / v27（0.417） | 我们的 V44（0.417） | 备注 |
+| Component | v17 / v27 (0.417) | Our V44 (0.417) | Note |
 |---|---|---|---|
-| v4b 引擎 + `fpnet_full1` | ✓ | ✓ | |
-| 双 ranker 引擎（prvsiyan + megayak） | ✓ | ✓ **+ PairTail LambdaRank** | V44 多一个 pair 模型（权重 0.15，只动尾部） |
-| ICEBERG | ✓ **预算 5400** | ✓ **预算 300** | ⚠️ 见下 |
-| GLACIER `[M+H]+` | ✓ 预算 4000 | ✓ 预算 4000 | 相同 |
-| 库命中上的零权重（`ICE_LAM_LIB=0`） | ✓ | ✗ | 尾部杠杆 |
-| **PubChem-only 通道** | ✓ **已打 popularity 补丁** | ✗ 未打补丁的 v16 | 产出 `S`/`top_pop`/`fz_top` |
-| **PubChem 流行度先验** | ✓ `POP_LAM=0.25` | ✗ 数据集已挂载但无人读 | CLAW 的门控量来源 |
-| **CLAW 提升规则** | ✓ `S_TAU=6, POP_TAU=5` | ✗（本轮已移植） | 唯一能改动 rank 1 的机制 |
-| 池内流行度先验 | `POP_MU=0.25` | `POOLPOP_MU=0.15` | 公开账本记 +0.002/0.15 |
-| MetFrag 式碎片前向项 | ✓ `FRAG_LAM=0.5`，池模式，**只用于 ICEBERG 打不了分的分子** | ✗（只作为引擎 ranker 的一个特征存在） | 与 ICE 覆盖**互补** |
-| `FILL_25` / `FUSE_ALPHA=0.65` | v28 才有 | ✗ / 0.6 | |
+| v4b engine + `fpnet_full1` | ✓ | ✓ | |
+| Dual-ranker engine (prvsiyan + megayak) | ✓ | ✓ **+ PairTail LambdaRank** | V44 adds a pair model (weight 0.15, tail only) |
+| ICEBERG | ✓ **budget 5400** | ✓ **budget 300** | ⚠️ see below |
+| GLACIER `[M+H]+` | ✓ budget 4000 | ✓ budget 4000 | same |
+| Zero weight on library hits (`ICE_LAM_LIB=0`) | ✓ | ✗ | tail lever |
+| **PubChem-only channel** | ✓ **popularity-patched** | ✗ unpatched v16 | produces `S`/`top_pop`/`fz_top` |
+| **PubChem popularity prior** | ✓ `POP_LAM=0.25` | ✗ dataset mounted but unread | source of CLAW's gate quantities |
+| **CLAW promotion rule** | ✓ `S_TAU=6, POP_TAU=5` | ✗ (ported this round) | the only mechanism that can change rank 1 |
+| In-pool popularity prior | `POP_MU=0.25` | `POOLPOP_MU=0.15` | public ledger: +0.002 per 0.15 |
+| MetFrag-style fragment forward term | ✓ `FRAG_LAM=0.5`, pool mode, **only for molecules ICEBERG cannot score** | ✗ (exists only as one engine-ranker feature) | **complements** ICE coverage |
+| `FILL_25` / `FUSE_ALPHA=0.65` | v28 only | ✗ / 0.6 | |
 
-### ⚠️ 这张表里最重要的一条反证
+### ⚠️ The most important contradiction in that table
 
-**v17/v27 用 5400 秒的 ICE 预算拿到 0.417，我们的 V44 只用 300 秒也拿到 0.417。**
-两个 notebook 在 ICE 覆盖率上差约 5 倍，分数却没差 ⇒ **ICE 预算不是这个平台期的分界线**。
+**v17/v27 get 0.417 with a 5400 s ICE budget; our V44 gets 0.417 with only 300 s.** Two notebooks
+differing ~5× in ICE coverage score the same ⇒ **the ICE budget is not this plateau's dividing
+line.**
 
-这直接**下调了 `icefull` 的先验**（它已排队，但我不再把它当主押注）。也说明
-v17 那个"碎片前向项只补 ICE 打不了分的分子"的设计，很可能是在补一个**本身就不关键**的缺口。
+This directly **lowers `icefull`'s prior** (it was queued, but I no longer treat it as the main
+bet). It also suggests v17's design of "use the fragment forward term only for molecules ICEBERG
+cannot score" is likely patching a gap that **is not critical in the first place**.
 
-⇒ **结论：分界线更可能在"PubChem 通道 + CLAW"这条线上**（v17 有、我们完全没有的那两格），
-而不是在 ICE/GL 的覆盖或权重上。这与 §3.6 路线清单第 4 条一致。
+⇒ **Conclusion: the dividing line is more likely on the "PubChem channel + CLAW" axis** (the two
+rows v17 has and we entirely lack), not on ICE/GL coverage or weights. This agrees with item 4 of
+the route list below.
 
-## 3.6 路线清单（哪些已关闭、哪些还开着，都带证据）
+## 13. Route list (what is closed, what is open, all with evidence)
 
-做实验最贵的不是算力，是**在死路上花时间**。下面每条都标了判定依据。
+The most expensive thing in experimentation is not compute — it is **time spent on a dead route**.
+Each item below carries its basis.
 
-| # | 路线 | 判定 | 依据 |
+| # | Route | Verdict | Basis |
 |---|---|---|---|
-| 1 | 硬编码/记忆答案 | ❌ **关闭** | §0.7 的反证：锁从未生效；隐藏 molecule_id 与可见不同 |
-| 2 | 候选池扩容（LOTUS/NPAtlas） | ❌ **关闭** | 本地实测：730,161 结构池里，**LOTUS ∪ NPAtlas 相对 train ∪ COCONUT 只多 373 个结构（0.051%）**。而且公开池（train 275,810 + COCONUT 499,133 + ChEBI/LIPIDMAPS 62,744）本来就**大于**我们的合并池 ⇒ 这条路根本没有空间 |
-| 3 | 加合物假设展开 | ❌ **低收益** | 自测：可见 test 上「分子式质量 vs 前体+加合物质量」一致率 **1209/1213 = 99.7%**，仅 4 张谱偏差 ~1 Da。主办方给的加合物标注是自洽的（研究报告里 3.34% 的错误率说的是**训练库**，不是这个测试集） |
-| 4 | 让 PubChem 通道进入 rank 1（**CLAW**） | ✅ **开着，最佳** | 公开池已饱和 ⇒ 池外答案只能在 PubChem tier 里；CLAW 正是"高置信时才放它上 rank 1"的唯一机制。**已排队** |
-| 5 | 尾部杠杆（ICE 覆盖 / TOPN / 尾槽） | ✅ 开着 | 尾部贡献约 0.07–0.12（§0.5）；公开账本 `ICE_LAM=GL_LAM=1.0` = +0.007 |
-| 6 | rank-1 旋钮（`unlock_engine`、`POOLPOP_MU`） | ✅ 开着 | 已备好变体 |
-| 7 | 自训更好的 ranker / FPNet | ✅ 开着但昂贵 | 需要一个可信的 holdout；可见 test 是诱饵，只能从 train 构造"库里没有"的留出集 |
-| 8 | 时间窗/质量窗调参 | ❌ 已接近饱和 | 研究报告 §3.3：O↔CH₄ 取代的亏损 36.4 mDa 大于任何 ppm 级窗口，收紧窗口原理上分不开同量异位素 |
+| 1 | Hard-coding / memorising answers | ❌ **closed** | §14 by contradiction: the lock never fires; hidden `molecule_id`s differ from the visible ones |
+| 2 | Candidate-pool expansion (LOTUS/NPAtlas) | ❌ **closed** | measured locally: in a 730,161-structure pool, **LOTUS ∪ NPAtlas adds only 373 structures (0.051%)** over train ∪ COCONUT. And the public pool (train 275,810 + COCONUT 499,133 + ChEBI/LIPIDMAPS 62,744) is already **larger** than our merged pool ⇒ no headroom at all |
+| 3 | Adduct-hypothesis expansion | ❌ **low yield** | self-measured: on the visible test, "formula mass vs precursor+adduct mass" agrees **1209/1213 = 99.7%**; only 4 spectra deviate by ~1 Da. The organisers' adduct labels are self-consistent (the research report's 3.34% error rate refers to the **training library**, not this test set) |
+| 4 | Get the PubChem channel into rank 1 (**CLAW**) | ✅ **open, best** | the public pool is saturated ⇒ out-of-pool answers can only be in the PubChem tier; CLAW is precisely the only mechanism that "promotes it to rank 1 only when confidence is extreme". **Queued** |
+| 5 | Tail levers (ICE coverage / TOPN / tail slots) | ✅ open | the tail contributes ~0.07–0.12 (§1); public ledger `ICE_LAM=GL_LAM=1.0` = +0.007 |
+| 6 | rank-1 knobs (`unlock_engine`, `POOLPOP_MU`) | ✅ open | variants built |
+| 7 | Training a better ranker / FPNet | ✅ open but expensive | needs a trustworthy hold-out; the visible test is a decoy, so a "not in the library" hold-out must be built from train |
+| 8 | Time/mass window tuning | ❌ near saturation | research report §3.3: the O↔CH₄ substitution deficit (36.4 mDa) exceeds any ppm-scale window, so tightening the window cannot in principle separate isobars |
 
-**第 2 条的实测代码**（一次跑完，~10 秒）：
+**The measurement behind item 2** (runs in ~10 seconds):
 
 ```python
 df = pd.read_parquet(r'data\processed\candidate_pool.parquet', columns=['key','sources'])
@@ -1070,14 +363,159 @@ marg = (s.str.contains('lotus') | s.str.contains('npatlas')) \
 print(marg.sum())        # -> 373
 ```
 
-**结论**：池子这条线走到头了。这也**反过来加强了第 4 条**——既然结构库的覆盖已经饱和，
-分数就只能从"如何让池外的 PubChem 证据在正确的时机上位"里挤，而那正是 CLAW 做的事。
+**Conclusion**: the pool route is exhausted. This **reinforces item 4** — since structural
+coverage is saturated, score can only be squeezed out of "how to get out-of-pool PubChem evidence
+promoted at the right moment", which is exactly what CLAW does.
 
-## 7. CLAW Promotion Rule（我们此前完全没有的 rank-1 杠杆）
+## 14. Known bottlenecks read off the run log
 
-来源：`bobthebot369/enveda-casmi-2026-v17-zenith-apex`，其 `CFG.update` 里写着
-`VERSION: 'v27-zenith-apex-0417'` —— 与 `lehau007/casmi26-sota-v27-zenith-apex-0417`（LB 0.417）
-是同一份发布。我们从 **v17 复制**（不是重打）了整段实现。
+The public-data run log, in full:
+
+```
+ICE meta {"status":"budget","n_mols":400,"n_mols_covered":371,"n_mols_scored":71}
+ICE rerank stats {'molecules': 71, 'changed_top25': 67, 'changed_top1': 0}
+GL rerank stats  {'molecules': 69, 'changed_vs_ice_top25': 66, 'changed_vs_ice_top1': 0}
+merge stats {'untouched': 400, 'gentle': 0, 'aggressive': 0, 'no_pc': 0}
+fused (+ICE) submission written; top-1 changed in 6 | ICE reordered 365
+V29 final top-1 locks applied: 1
+total 7,370 s (ceiling 9 h)
+```
+
+Key points:
+- **The forward fragment models (ICEBERG/GLACIER) never change rank 1**, only reordering ranks
+  2–25 → the tail is the only place they can improve.
+- `merge stats untouched=400` shows the PubChem channel was gated off wholesale by
+  `lib_max ≥ 0.9`. Normal on public data (the answers *are* in the library); unknown on the hidden
+  set.
+- The engine ships a top-1 shield: `gate_stats {'top1_locked_pair_tail': 400}`.
+- Only 2.05 h of 9 h used — about 7 h of compute headroom for more channels.
+
+---
+
+# Part III — Evidence dossier
+
+## 15. Settled: the champion lock never fired on the hidden rerun (so `nolock` was redundant)
+
+This matters because it kept resurfacing. Use **proof by contradiction** to eliminate every
+scenario in which the lock could have fired:
+
+| Scenario | Hypothesis | Predicted score | Actual | Verdict |
+|---|---|---|---|---|
+| X | hidden `molecule_id`s match the visible ones **and the molecules too** | answer key = visible-test recovered truth; our visible-test output scores **0.9902** against it (393/400 top-1 hits) ⇒ the submission should score ≈0.98 | **0.417** | ❌ eliminated |
+| Y | hidden `molecule_id`s match but the **molecules differ** (ID reuse) | the lock force-inserts "the structure computed for a decoy molecule" at rank 1 ⇒ rank 1 always wrong, every correct candidate shifts down one. If unlocked rank-1 hit rate is p≈0.30–0.35, the locked score is ≈ (0.417−p) + 0.5p ≈ **0.25** | **0.417** | ❌ eliminated |
+| Z | hidden IDs differ from the visible ones | `_champion_top1[str(mid)]` raises **KeyError**, cell 31 crashes; the `submission.csv` cell 21 already wrote is still graded (our run had status=complete, which is the evidence) | 0.417 | ✅ the only self-consistent one |
+
+⇒ **The hidden set's `molecule_id`s differ from the visible test's; the champion lock never fired;
+our effective submission is cell 21's fused output.** The hard-coded/memorised-answer route is
+closed for good, and a `nolock` variant would only reproduce the same score (its sole real value
+is **removing a crash** so cell 32's final validation can run — worth keeping as a robustness
+change, not worth a submission slot).
+
+**Side effect (important)**: because the notebook crashes at cell 31, **cell 32 never runs**, and
+what gets graded is cell 21's raw output. So any "remove the lock" variant would incidentally
+change the final file (one more dedup/truncation pass), **which would contaminate the ablation** —
+hence `claw` and friends all **keep** cell 31 as-is, sharing the baseline's crash path.
+
+## 16. Is `lib_max` trustworthy? (resolved — first read from a notebook, then confirmed from source)
+
+This decided whether `claw` is a live lever at all, since CLAW's entire gate sits inside the
+`lib_max < 0.9` branch. A 1.15 GB engine dataset kept dropping the connection, **but it was not
+needed**: `ahmedberatozer/casmi26-v4q-inference` (a public notebook) embeds the engine's
+similarity kernel.
+
+```python
+def entropy_sim(qmz, qp, cmz, cp, tol):
+    ...
+    if tot <= 0: return 0.0                      # <- empty spectrum returns 0, not 1
+    return 1.0 - (2.0 * SAB - SA - SB) / np.log(4.0)   # standard entropy similarity, range [0,1]
+
+def entropy_sim_shift(qmz, qp, cmz, cp, tol, shift):
+    a = entropy_sim(...); b = entropy_sim(q, ref+shift)   # modified-cosine idea: same molecule,
+    return a if a > b else b                              # different adduct keeps neutral losses
+```
+
+**The preprocessing is gentle** (from the same notebook's `CFG`): `INT_FLOOR = 0.002` (keep peaks
+above 0.2% of base peak), `MAX_PEAKS = 256`, `INT_POWER = 1.0`, `ENT_WEIGHT = True`. That is, a
+spectrum is **not** "cleaned" down to a few peaks.
+
+⇒ **Inference (supported by both the code and the score)**:
+
+1. `entropy_sim` has range `[0,1]` and returns 1.0 **if and only if** the (cleaned, optionally
+   shifted) peak distributions are identical; an empty spectrum returns 0. **There is no
+   "degenerate return 1.0" branch.**
+2. Gentle preprocessing ⇒ different molecules being cleaned into the same spectrum is very
+   unlikely.
+3. So `lib_max = 1.0` means **the library contains an exact spectrum of that hidden molecule**.
+4. If that held for all 400 hidden queries, the answers would be exactly retrievable from train ⇒
+   the score should approach 1.0. **Measured: 0.417.**
+
+⇒ **`lib_max` cannot be identically 1.0 on the hidden set; the `lib_max < 0.9` merge gate is open
+there.**
+⇒ **The PubChem channel fires and CLAW fires — the queued `claw` is a live lever, not a dead end.**
+
+(`merge_force` was kept in the queue as a behavioural cross-check: if the channel was in fact
+always open, it would not change the score.)
+
+**And this terminated a piece of work**: the 1.15 GB `casmi26-v4b-models` download was cancelled —
+it existed only to read how `engine.run` assembles `info['lib_max']`, and that answer was already
+in hand and would no longer change any decision.
+
+### Confirmed from engine source
+
+After obtaining `code/casmi/engine.py`, its assembly is directly readable:
+
+```python
+lib_max = np.zeros(nc)                    # nc = number of candidates  <- note: per-candidate
+...
+    if v > lib_max[ci]: lib_max[ci] = v   # assign each library hit's similarity to its candidate
+...
+lmax = float(lib_max.max())               # the molecule-level scalar, i.e. info['lib_max']
+X[:, col['lib_max']] = lib_max            # also one of the 160 features
+```
+
+⇒ **`lib_max` = the best library-spectrum similarity among candidates *inside the window*** (not
+the library-wide maximum). So `lib_max ≥ 0.9` means: **some candidate in the window has a library
+spectrum with similarity ≥ 0.9 to the query** — the library genuinely knows this compound. This
+matches the public gate's design intent exactly.
+
+Combined with the kernel's range/empty-spectrum behaviour and the score contradiction:
+
+> **`lib_max` cannot be identically 1.0 on the hidden set; the merge gate is open there; CLAW
+> fires.** This is now **source-confirmed**, not inferred.
+
+## 17. The engine's 160 features (reference material; the modelling line will need it)
+
+`engine.py`'s `FEATURES`, grouped by family (v4b appends the `fe_v4` families on top, totalling
+160):
+
+| Family | Features | Meaning |
+|---|---|---|
+| `lib_*` (10) | `lib_max/mean/top3/nspec/cos/max_rank/gap/grp_max/hit/same_adduct` | library-spectrum evidence |
+| `ap_* / tan_* / top_sim*` (16) | `ap, a1, best_tan, top_tan, mean_tan, ap_rank, ap_gap, ap_grp_max, top_sim, ap_np, best_tan_np, top_sim_np, ap_np_gap, ap_sum, n_analog_hi, tan_zero_shift` | **analog propagation** |
+| `fz*` (14) | `fz, fz_z, fz_rank, fz_gap, fz_norm, fz_top, fz_softmax, fz_grp_ent, fz_grp_gap, fz_single, fz_single_gap, fz_merged, fz_merged_gap` | FPNet fingerprint score |
+| `fp_*` (5) | `fp_cos, fp_tan, fp_ll, fp_ll_gap` | fingerprint geometry / likelihood |
+| `el_*` (5) | `el_c, el_n, el_o, el_sum, el_rank` | element counts (from the pool's formulas) |
+| `fr_* / sf_*` (16) | `fr_int, fr_int_mean, fr_cnt, fr_top10, fr_strict, fr_rank, fr_gap, fr_z, fr_n, sf_*` | **fragment explanation** (the MetFrag-style term is a *feature* here, not a separate channel) |
+| `formula_* / mass_* / n_*` (10) | `formula_share, n_formula, formula_is_top, mass_ppm, mass_ppm_rank, n_heavy, fp_bits, n_cand, n_query, n_pos, n_neg, target_mass` | formula and mass |
+| Interactions (6) | `lib_x_fz, ap_x_fz, agree_lib, agree_ap, fr_x_fz, q_npeaks` | cross-channel agreement |
+| **`gen_*` (6)** | **`is_gen, gen_parent_sim, gen_steps, gen_parent_tan, n_gen, gen_rank_fz`** | **Class-3 generated candidates** (parent-based edits) |
+| `xs_*` (8) | `xs_max, xs_mean, xs_merged, xs_gap, xs_rank, xs_z, xs_top, xs_grp_gap` | cross-encoder |
+
+**Two points worth remembering**:
+
+1. **The generative channel already exists, with 6 features** (`is_gen` etc.) — so "we need
+   generation" is already partly implemented in the public solution; the question is not whether
+   it exists but how much it contributes.
+2. **Fragment explanation (`fr_*`/`sf_*`) already exists as features** — which explains why my
+   earlier assessment that "porting v17's standalone fragment term" had limited upside: **the
+   same signal is already in the ranker's input**, just in a different place.
+
+## 18. CLAW Promotion Rule (the rank-1 lever we entirely lacked)
+
+Source: `bobthebot369/enveda-casmi-2026-v17-zenith-apex`, whose `CFG.update` says
+`VERSION: 'v27-zenith-apex-0417'` — the same release as
+`lehau007/casmi26-sota-v27-zenith-apex-0417` (LB 0.417). We **copied** the whole implementation
+from v17 rather than re-implementing it.
 
 ```python
 def promote(base, base_keys, pc, pc_keys, slots, n=25):
@@ -1088,71 +526,606 @@ def promote(base, base_keys, pc, pc_keys, slots, n=25):
     top = pc[0]
     return ([top] + [x for x in usual if x != top])[:n]
 
-# 门控（在 lib_max < LIB_TAU 分支内）
+# the gate (inside the lib_max < LIB_TAU branch)
 if USE_PROMOTION and S is not None and float(S) > S_TAU and pop_top >= POP_TAU:   # 6.0 / 5.0
     final = promote(smis, keys, p['pc'], p['pc_keys'], slots)
 ```
 
-**两个门控量的含义**（来自 v17 的 `probe_core2` 补丁）：
+**What the two gate quantities mean** (from v17's `probe_core2` patch):
 
-| 量 | 定义 | 含义 |
+| Quantity | Definition | Meaning |
 |---|---|---|
-| `S` | 该候选 `z(f.z) + POP_LAM·pop` 在**自身 ±10 ppm 质量窗内**的值 | `> 6.0` = 整个质量窗里的 **6σ 离群点**："这个窗里没有第二个结构跟谱图沾边" |
-| `pop_top` | `log1p(PubChem SID 数) + log1p(PMID 数)` | `≥ 5` = 真实存在、被大量文献记录过的化合物 |
+| `S` | the candidate's `z(f.z) + POP_LAM·pop` **within its own ±10 ppm window** | `> 6.0` = a **6σ outlier** in that window: "no second structure in this window is anywhere near the spectrum" |
+| `pop_top` | `log1p(PubChem SID count) + log1p(PMID count)` | `≥ 5` = a compound that genuinely exists and is heavily documented |
 
-**为什么必须门控**：把 PubChem 候选从第 2 槽提到 rank 1，对了 +0.5、错了 −0.5，
-**恰好 50% 精度处 EV 中性**；从第 4 槽提，盈亏平衡点是 43%。收益全部来自"只在极端离群时动手"。
+**Why it must be gated**: promoting a PubChem candidate from slot 2 to rank 1 gains +0.5 if right
+and loses −0.5 if wrong — **EV-neutral at exactly 50% precision**; from slot 4, break-even is 43%.
+All the value comes from acting **only on extreme outliers**.
 
-**我们此前缺的是两半代码，不是一个常数**：
-- V44 的 PubChem 探针是**未打补丁的 v16**，不产出 `S`/`top_pop`/`fz_top`
-- runner 把这三个量丢掉（`res[mid] = dict(pc=..., pc_keys=..., **extra[mid])`）
-- cell 19 的 merge 没有 promotion 分支
-- 而 `casmi26-pubchem-popularity-prior` 数据集**已经挂载**、`CASMI_POP_DIR/LAM/UNION`
-  **已经写进环境变量**——没有任何代码读它
+**What we were missing was two halves of code, not a constant**:
+- V44's PubChem probe is an **unpatched v16** and does not produce `S`/`top_pop`/`fz_top`
+- the runner discards those three quantities (`res[mid] = dict(pc=..., pc_keys=..., **extra[mid])`)
+- cell 19's merge has no promotion branch
+- yet `casmi26-pubchem-popularity-prior` **was already mounted** and `CASMI_POP_DIR/LAM/UNION`
+  **were already in the environment** — with no code reading them
 
-移植后的自检：`python scripts/test_claw_port.py`（从**生成的 notebook** 里取出
-`merge`/`promote` 执行，断言 slot 语义与门控结构）。
+Port self-check: `python scripts/test_claw_port.py` (extracts `merge`/`promote` **from the
+generated notebook** and executes them, asserting slot semantics and gate structure).
 
-**⚠️ 未知数（必须先看日志）**：整段门控在 `lib_max < 0.9` 分支**里面**。公开数据运行日志
-是 `merge stats {'untouched': 400}`——通道被整体关死。V44 代码注释还写着
-*"V43's lib_max was 1.0 for every hidden query"*。如果隐藏集也这样，**CLAW 永远不会触发**。
-因此每次运行的日志必须检查 `merge stats` 里的 `promoted / aggressive / gentle / untouched`。
+**⚠️ Unknown that must be settled from logs**: the whole gate sits **inside** the
+`lib_max < 0.9` branch. The public-data run log says `merge stats {'untouched': 400}` — the
+channel is gated off entirely, and V44's code comment even says *"V43's lib_max was 1.0 for every
+hidden query"*. If the hidden set behaves the same, **CLAW never fires**. So every run's log must
+be checked for the `promoted / aggressive / gentle / untouched` counts. (Superseded by §16, which
+settles it from source: the gate is open on hidden data.)
 
-## 4. 从运行日志读出的已知瓶颈
+---
 
-运行日志（公开数据）显示的全量事实：
+# Part IV — Measurement
+
+## 19. Pre-registration: predictions and falsification conditions, written before results arrive
+
+| Variant | Prediction | Basis | If the result is zero | **What counts as falsification** |
+|---|---|---|---|---|
+| `claw` | **+0.000 ~ +0.005** | the public ledger claims +0.024~0.043; but v27 (with CLAW) and V44 (without) both score 0.417 | the gate is too strict (`S>6 ∧ pop≥5` rarely fires) — **not** evidence that CLAW is worthless | if `promoted` ≫ 0 while the score does not move ⇒ **the CLAW mechanism itself is inert** (that would be the negative evidence) |
+| `icefull` | **0.000 ± 0.002** | v17/v27 get 0.417 with ICE 5400; we get 0.417 with 300 ⇒ ICE coverage does not explain the difference | ICE contributes nothing material to the tail | if the score **drops** ≥0.002 ⇒ ICE reranking is harmfully perturbing the tail |
+| `pop30` | **+0.000 ~ +0.004** | the author lists "+0.002 per 0.15", i.e. +0.003~0.005 | the prior has no discriminative power on real candidates | if the score drops ⇒ pool popularity anti-correlates with being the answer (unlikely) |
+
+**The key methodological point**: `claw`'s zero result has **two completely different meanings**,
+distinguishable only by diagnostics:
 
 ```
-ICE meta {"status":"budget","n_mols":400,"n_mols_covered":371,"n_mols_scored":71}
-ICE rerank stats {'molecules': 71, 'changed_top25': 67, 'changed_top1': 0}
-GL rerank stats  {'molecules': 69, 'changed_vs_ice_top25': 66, 'changed_vs_ice_top1': 0}
-merge stats {'untouched': 400, 'gentle': 0, 'aggressive': 0, 'no_pc': 0}
-fused (+ICE) submission written; top-1 changed in 6 | ICE reordered 365
-V29 final top-1 locks applied: 1
-总耗时 7,370 s（上限 9 h）
+promoted == 0             => gate too strict, CLAW was never tested -> sweep S_TAU before judging
+promoted >> 0, score flat => CLAW really is inert                  -> retire the line entirely
 ```
 
-要点：
-- **前向碎片模型（ICEBERG/GLACIER）从不改动第 1 名**，只重排第 2–25 名 → 尾部是唯一
-  能靠它们改善的地方。
-- `merge stats untouched=400` 说明 PubChem 通道被 `lib_max ≥ 0.9` 整体门控关闭。公开数据上
-  这是正常的（答案就在库里），隐藏集上是否触发未知。
-- 引擎自带 top-1 盾：`gate_stats {'top1_locked_pair_tail': 400}`。
-- 只用掉 2.05 h / 9 h，还有约 7 h 算力可以加通道。
+### ⚠️ Correction found by self-audit before results arrived: `promoted` is **necessarily 0** in a batch run
 
-## 5. 工具
+I had planned to read `promoted` from the batch run's log. **That was wrong**:
 
-| 脚本 | 用途 |
+- the batch run uses the **public test**, and all 1,213 of its spectra are verbatim from train
+  ⇒ every molecule's `lib_max ≈ 1.0` (the original V44 public run measured
+  `merge stats {'untouched': 400}`);
+- `promote()` and the entire merge branch sit **inside the `lib_max < LIB_TAU(0.9)` else-branch**;
+- ⇒ on public data that branch **never executes**, so `promoted` is identically 0 **regardless of
+  whether CLAW works**.
+
+So of the diagnostic chain, **only the first item is valid**:
+
+| Diagnostic | Valid? | Why |
+|---|---|---|
+| `V45 pop-align: pc_lsid=N pc_mass=M OK\|MISALIGNED` | ✅ | it lives in `init_worker`, **independent of the gate**, so it always runs |
+| `merge stats`' `promoted / aggressive / gentle` | ❌ | the gate is always "skip" on public data, so they are necessarily all zero |
+
+**Consequence**: if `claw` scores 0.417, we **cannot** distinguish "gate too strict (never tested)"
+from "mechanism inert" from the log. That distinction needs another variant: **`claw_force`
+(already built) bypasses the `lib_max` gate**, so the merge/promotion branch executes on public
+data too and produces non-zero `aggressive/gentle/promoted` in the batch log — that is **wiring
+verification**, not effect verification.
+
+**This does not affect `claw`'s score itself**: the gate is open on the hidden rerun (§16,
+source-confirmed), so the score remains valid; only the **interpretability of a zero** is affected.
+
+### ✅ Remedy: use the submission **byte count** to tell whether the merge branch actually ran
+
+We **cannot download** the hidden rerun's submission file (`submissions.download` returns 403),
+but **the submission record carries `totalBytes`**. And ctl's hidden byte count is known — it is
+the author's 0.417 run: **530,716 bytes**.
+
+That gives a free binary discriminator:
+
+| `claw`'s `totalBytes` | Conclusion |
 |---|---|
-| `scripts/build_variant_kernel.py` | 从 `notebooks/v44_base/notebook.ipynb` 造变体，替换必须命中一次 |
-| `scripts/push_kernel.py` | 推送 = 保存版本并触发批量运行 |
-| `scripts/wait_submit_report.py` | 等 COMPLETE → 校验输出文件存在 → 提交 → 轮询分数 |
-| `scripts/recover_test_truth.py` | 反查**可见** test 的真值（只用于回归检测，与榜分无关） |
-| `scripts/score_submission.py` | 用评分器同款互变异构 InChIKey14 给提交打 MRR@25 |
+| **≈ 530,716** (matching) | the merge branch **almost certainly never ran** ⇒ `lib_max ≥ 0.9` holds on the hidden set too ⇒ **§16's reasoning is wrong**, the PubChem channel is dead weight for everyone, and the whole CLAW line is void |
+| **clearly different** | the branch did run and the output did change ⇒ if the score is still 0.417, *that* is the actionable conclusion "the change took effect but did not help" |
 
-## 6. 不要做的事
+**Why it works**: the patch changes the tier candidates' **ordering** (`z(f.z)+0.25·popularity`)
+and the pass-1 union, and the merge branch places those 5 candidates into slots — different
+candidates ⇒ different SMILES lengths ⇒ different byte count. The gate always skips on public
+data, so **the batch run cannot show this signal; only the hidden submission's `totalBytes` can**.
 
-- 不要用可见 test 的统计量去调参（它不是评测集）。
-- 不要在同一个 kernel 上并发推多个版本再用 `kernels/status` 判断状态：该接口是
-  **按 kernel**（最新版本）返回的，v1 和 v2 会互相误判。一个变体一个 kernel slug 最稳。
-- 不要把 champion 字典当成"答案"去扩展（它只是另一个公开解读的产物，且键是可见 test）。
+**What it cannot tell us**: how many molecules were promoted (the exact `promoted` value is still
+unavailable). But it turns the most important binary question — **was the gate open?** — from
+"undecidable" into "read one number".
+
+⇒ **Once `claw`'s result arrives, the first thing to do is compare `totalBytes`, not look at the
+score.**
+
+### The discriminator's two preconditions (written down to avoid over-reading later)
+
+**Precondition 1: the "unchanged" reference byte count has to be borrowed.** We **never submitted
+ctl** (cancelled), so the reference is the author's 0.417 run at **530,716 bytes**. Strictly, I
+cannot prove that `scriptVersionId=355245043` is **character-identical** to the content I pulled
+(that ID cannot be pulled directly). ⇒ the reference carries **undigested uncertainty**.
+
+**Precondition 2: natural variation has a second data point.** The gengsr reproduction (giaok246,
+**a different notebook**) produced **532,444 bytes** on the same hidden set. Two different
+implementations differ by **1,728 bytes**.
+
+⇒ So the reading cannot be "any difference means the gate was open":
+
+| `claw`'s `totalBytes` | Reading |
+|---|---|
+| within **530–533 KB** | indistinguishable from "unchanged" ⇒ the gate most likely did not open |
+| **clearly outside** that band (say ±10 KB) | the branch really ran ⇒ only then does the score mean "took effect but did not help" |
+
+Order-of-magnitude check: if the merge branch fires for most molecules, each replaces up to 5
+tier candidates (400 molecules ⇒ up to ~2,000 candidates swapped, ~50 bytes each) ⇒ **~100 KB**,
+far above the 1.7 KB natural variation. **So the discriminator is mechanically sensitive enough —
+precondition 1 is its weak point.**
+
+**Lesson (same family as the three silent bugs)**: in pre-registration I treated "the diagnostic
+distinguishes the two meanings" as a given, **without checking whether that diagnostic could even
+take a non-zero value on the batch run's data**. A diagnostic must itself be validated —
+otherwise it merely makes the result look interpretable.
+
+This is exactly why I added the `stats['promoted']` counter and the `pop-align` hook to `claw` —
+**without them the experiment could not reach a conclusion whatever the outcome**. And whether
+`promoted` can be read at all depends on "batch-run logs are harvestable" (now covered by
+automation).
+
+Likewise, `icefull`'s and `pop30`'s zero results each have two meanings (genuinely no effect vs
+silently broken), and both diagnostics are in their run logs (`ICE meta` /
+`V45 POOL_POP prior DISABLED`).
+
+**Conclusion: the design goal of these three experiments is not to raise the hit rate but to
+guarantee a conclusion whatever the outcome.**
+
+### ⚠️ Correction: `claw` is not a clean single-variable experiment (diff verified line by line)
+
+Using `scripts/diff_variant.py` to compare `notebooks/v45/claw` against `notebooks/v44_base`:
+**3 of 33 cells changed (cells 3 / 9 / 19), all code cells; 30 are byte-identical.** The
+architectural spine (v4b engine + `fpnet_full1`, dual-ranker engine + PairTail, ICEBERG/GLACIER,
+RRF, the champion lock, the 25-slot structure, all 14 datasets) is **untouched**.
+
+But the three changes **all act on the same branch**, so a result cannot be attributed to CLAW
+itself:
+
+| # | Change | Effect |
+|---|---|---|
+| 1 | the v17 popularity patch | **changes the tier candidate list** (`z(f.z)+0.25·popularity` ordering + a popularity-expanded pass-1 union) |
+| 2 | `rel` from `pc_fz[0]` to `fz_top` | the **aggressive/gentle slot choice can flip** (necessary — the patch changed `pc_fz`'s meaning — but it is a second behavioural change) |
+| 3 | the `promote()` gate | promotes a tier candidate to rank 1 at high confidence |
+
+⇒ **Even if the score moves, we cannot say "CLAW works".** My pre-registration treated `claw` as
+"single-variable + instrumented"; that assumption was wrong (the instrumentation half was
+corrected above).
+
+**For a clean single variable**, the correct order is to apply only the patch first (candidate
+list changes, rank 1 does not), then layer the promotion on top. **That needs a new variant, which
+the "variant creation frozen" decision has paused** until `claw`'s result is in.
+
+**Also note**: **on the public-data batch run, `claw`'s output should be byte-identical to ctl's**
+(the gate always skips), so that run verifies "the plumbing works" but **cannot** verify the patch
+or CLAW.
+
+## 20. Method A: the leak-free backtest
+
+**Motivation**: the real bottleneck is not a shortage of ideas but that we can measure **6 things
+a week, each as a three-decimal scalar**. Any method needing a threshold sweep (CLAW's gate, tier
+admission) is impossible at that throughput. So build measurement capability first, then talk
+about methods.
+
+**Step one, done**: `scripts/build_leakfree_folds.py` builds **structure-disjoint,
+source-stratified** folds from `train.parquet` (`data/processed/folds.parquet`) with three
+asserted invariants (each structure in exactly one fold; folds disjoint at the **inchikey14**
+level rather than the row level; every fold carries every stratum):
+
+```
+rows 2,539,608   unique structures 275,810   fold sizes 55,161–55,163
+regime: syn 228,179 | other 47,381 | np 250
+```
+
+### ✅ Feasibility confirmed: the engine ships leak-hiding hooks, so **no pool or library rebuild is needed**
+
+I had assumed A's main cost was "removing the held-out molecule's structure and spectra from the
+pool and library" — which would mean rebuilding the structures + spectra + fragments +
+fingerprints quartet. **Reading `engine.py` showed it is unnecessary**: the author built the
+simulation hooks in.
+
+```python
+def run(self, spectra, target, exclude=None, exclude_sid=-1, exclude_lib=-1, drop_pid=-1):
+    """...
+    exclude: boolean mask over library spectra to hide (simulation); exclude_sid/exclude_lib:
+    representatives to hide for the analog channel; drop_pid: remove this pool entry (class-3 sim).
+    """
+```
+
+| Hook | Effect | Leak it closes |
+|---|---|---|
+| `exclude` | boolean mask **over library spectra** (set the structure's own rows True among 2.54M) | the library-retrieval channel cannot see the answer |
+| `exclude_sid` / `exclude_lib` | hide that structure's representative from the **analog channel** | analog propagation cannot see the answer |
+| `drop_pid` | remove the entry from the pool window (author's comment: *class-3 simulation: the hidden truth may be generated*) | the pool has no answer, but **the generative channel can still produce it** |
+
+⇒ **Each of the three leak surfaces (library / analog / pool) has a dedicated switch, and it is a
+per-call argument, not a dataset to rebuild. A's cost drops from "rebuild assets" to "change one
+call".**
+
+**This also explains an old item**: the team's earlier V_A_hard (0.0476, judged "impossible")
+**rebuilt the library by hand** to remove answers, which is not the same as the engine's built-in
+simulation path. The author clearly anticipated the need and our early implementation bypassed it.
+It also means this document's earlier line "V_A_hard is impossible" should be retired: **the
+correct method was in the engine all along.**
+
+### A's landing design (cost now clear)
+
+The backtest kernel is the V44 notebook with three changes:
+
+1. **`COMP` points at a synthesised "test set"**: take the structures of one fold with
+   `regime == 'other'` from `folds.parquet` and assemble a `test.parquet` from their spectra in
+   `train.parquet` (column names matching the competition);
+2. **each query calls `E.run(..., exclude=mask, exclude_sid=sid, exclude_lib=lib, drop_pid=pid)`**,
+   closing all three leak surfaces at once;
+3. **compute MRR@25 at the end** (rank of the first candidate whose key equals the held-out
+   structure's key), broken down by fold and by source stratum — the same diagnostic convention as
+   `ranker.py`'s `mrr_at(k=25)`.
+
+### ⚖️ Component 1 done, and it exposed a conflict that must be resolved: **statistics vs runtime**
+
+`scripts/build_backtest_queries.py` built the query set (fold 0 / regime `other`,
+`data/processed/backtest_fold0_other.parquet`): **2,000 molecules / 16,311 spectra**, with columns
+**cast one by one to `test.parquet`'s reference schema** (not hand-written names), asserting
+"every held-out structure has spectra; no structure was lost to peak cleaning". The truth table is
+stored separately.
+
+**But computing runtime against resolution shows they conflict**:
+
+| Queries | vs the real run (400) | Estimated runtime* | Paired s.e. (10% of queries affected, \|Δ\|≈0.3) |
+|---:|---:|---:|---:|
+| 400 | 1× | ~2 h | ±0.0063 |
+| 2,000 | 5× | **~10 h ✗ over the cap** | ±0.0028 |
+| 9,500 (whole fold) | 24× | infeasible | **±0.00097** |
+
+\* the engine's channel stage is about 2,012 s for 400 molecules; ICE/GL budgets are fixed but
+feature computation grows linearly with molecules.
+
+⇒ **Reaching ±0.001 needs ~9,500 queries, and 9,500 queries cannot finish.** That is A's real
+constraint — not insufficient sample size, but **insufficient compute at the sample size that
+would suffice**.
+
+### ✅ Wiring verified: the three hooks' index spaces (read line by line in `library.py` / `engine.py`)
+
+The easiest thing to get wrong in the backtest is **which index space each hook lives in**; a
+mistake does not raise, it just silently fails to exclude:
+
+| Hook | Index space | Length / source | Rebuilt per call? |
+|---|---|---|---|
+| `exclude` | **library spectra** (not structures, not representatives) | `len(L.sid)` = 2,539,608 | ❌ one boolean array per call, reusable by editing a few entries |
+| `exclude_sid` / `exclude_lib` | **structure id** + **library ordinal** | values of `L.sid` / `L.lib` | ❌ two integers |
+| `drop_pid` | **candidate pool** entry | `struct_key[sid]` → index into `pool.key` | ❌ one integer |
+
+**Two implementation facts that decide whether it is cheap**:
+
+1. `Library.window(..., exclude, ...)` does `c = c[~exclude[c]]` where `c` comes from
+   `self.order`, i.e. **library-spectrum indices** ⇒ `exclude` is a boolean array of length
+   2,539,608. **Mistaking it for a per-structure mask (275,810) raises a length mismatch** —
+   fortunately that one does not fail silently.
+2. `Engine.analogs` uses `rep = self.rep` — **the representative set is built once at engine
+   construction and cached**; each call only does `keep &= ~exclude[ridx]` on the windowed slice
+   ⇒ **per-query exclusion does not trigger a rebuild**. If it rebuilt the representative set per
+   query (a 2.5M-row lexsort), 9,500 queries could never finish.
+
+⇒ **Per-query exclusion is computationally cheap; the Tier 1 plan stands at the implementation
+level.**
+
+### Calibration design for component 4 (fixed **before** running, or "the backtest is trustworthy" becomes a post-hoc judgement)
+
+A's value rests entirely on one thing: **can it rank configurations correctly?** So before using it
+to screen any policy, it must be calibrated against configurations with **known magnitude
+differences**. Three configurations are built (`--degrade`):
+
+| Configuration | Construction | Expected | Role |
+|---|---|---|---|
+| `bt` | V44 as-is | baseline | reference |
+| `bt_top1` | candidate list truncated to **1** | **large drop** | **structural check**: with only rank 1 left, MRR should collapse to top-1 accuracy |
+| `bt_no_ice` | `ICE_LAM=0, ICE_BUDGET=0, ICE_PC=False` | slight drop | **magnitude check**: the public ledger records the ICE/GL weights as worth +0.007 |
+
+**Falsification conditions (fixed)**:
+
+```
+if bt_top1 >= bt            => the backtest cannot even detect "one candidate" => A is void immediately
+if bt_no_ice > bt           => the forward models contribute negatively, contradicting the public
+                               ledger => the backtest is untrustworthy
+if bt_no_ice ≈ bt (±0.002)  => undecidable => treat as "failed magnitude calibration";
+                               A degrades to structural-only use
+```
+
+**A weakness that must be admitted**: the three configurations are **three separate notebooks**, so
+they need three Kaggle runs, and **cross-run comparisons are unpaired** ⇒ a single 400-query run
+has s.e. ≈ 0.0063, **larger than the 0.007 `no_ice` is looking for**. So `no_ice` can only be a
+**sign check**, not a magnitude check.
+
+**Comparisons between policies (A's actual purpose) are paired within a single notebook** — they
+share one engine run and differ only in post-processing ⇒ paired s.e. ≈ ±0.001. **This is exactly
+where A's use differs from its calibration, and the two must not be conflated.**
+
+⇒ Component 4's criterion: **`bt_top1` must be clearly below `bt` (structural), and `no_ice` must
+not be positive (sign).** If both hold, A can do paired policy comparisons; if not, stop.
+
+### ⚠️ A class of leakage A cannot remove: **model-level leakage** (must appear in any conclusion)
+
+The engine's three data surfaces (library / analog / pool) can be closed with `exclude` /
+`exclude_sid` / `drop_pid`, **but the public models were trained on train, and our held-out
+structures are in train too**:
+
+| Component | Has seen the held-out structure? | Consequence |
+|---|---|---|
+| FPNet (v4b / v3's A+B) | **yes** | it may "recognise" the held-out structure ⇒ optimistic score |
+| ranker (160 features × 4 GBM) | **yes** (training rows come from train) | same |
+| ICEBERG / GLACIER | **yes** (forward models trained on train) | same; **Tier 1 disables them, which mitigates it** |
+| PubChem tier channel | indirectly (the structure may be in the tier) | the tier has no spectra, so spectral retrieval is impossible ⇒ weak leakage |
+
+**⇒ We cannot "delete" the held-out structure from the public models** (that would need retraining,
+which in turn needs the author's `split.parquet`, absent from the public pack). Therefore:
+
+> **A's absolute MRR is optimistic and must not be read as "what our pipeline scores on genuinely
+> novel molecules".**
+
+**How much this affects its use**:
+- **Paired policy comparisons are affected less** — two policies share the same (equally leaked)
+  models, so the difference comes mainly from the post-processing rule itself;
+- but **if a policy specifically exploits "remembered" information** (e.g. CLAW promoting a
+  PubChem candidate to rank 1, or any gate relying on model confidence), leakage makes it look
+  better than it is.
+
+**Handling**: treat A as a **ranking tool** (which policy is better), not a **level tool** (what
+score we can get). Any policy that wins in A **must still be confirmed on the LB** — which is
+precisely why the tiered reading rules exist.
+
+### ✅ Fold definitions now aligned (there were once "two different fold 0"s)
+
+Self-audit found `build_leakfree_folds.py` used `groupby(..., sort=False)` (first-appearance
+order) while the backtest kernel inside a notebook can only use the default `sort=True` ⇒ **two
+"fold 0"s of identical size (both 9,477) with different membership**, and no error.
+
+⇒ The fold builder was switched to the default ordering, `folds.parquet` regenerated, and **all 15
+(fold × stratum) cells checked one by one**:
+
+```
+all 15 fold x regime cells identical: True
+```
+
+**Why alignment is mandatory**: otherwise the "fold 0" written in the docs and the "fold 0" the
+backtest actually uses are different sets, and any cross-experiment comparison silently
+misaligns — while both sides have the same size, so nothing looks wrong in the numbers.
+
+### ✅ Synthetic `COMP` coverage audited (not eyeballed)
+
+Every place the notebook reads a file from `COMP` was listed and checked against the synthetic
+directory:
+
+| Read site | File | Present in the synthetic dir? |
+|---|---|---|
+| cell 5 | `train.parquet` | ✅ symlinked to the competition data |
+| cell 5 | `test.parquet` (reading the real one for column names) | ✅ `COMP` has not been redirected yet at that point |
+| cell 7 | **`sample_submission.csv`** | ✅ synthesised — **the easiest one to miss**: cell 7 reads it *after* `COMP=SM`, and without it the run dies an hour in |
+
+The remaining `/kaggle/input/**` globs look for datasets (the rdkit wheel, `fpnet_full1`,
+`eng_runner`'s `ROOTS`), not `COMP`, so they are unaffected.
+
+**Also audited: does the replaced cell 5 leave any dangling global?** The original defined
+`_sig / _te / _full / _keep / SMOKE_N / IS_RERUN / ICE_BUDGET`; my replacement keeps only the last
+two. Checking each for use by later cells ⇒ **no dangling references** (`ICE_BUDGET` is used only
+in cell 17, and it is kept).
+
+⚠️ **My checker first raised a false alarm**: `ICE_BUDGET` is assigned by **tuple unpacking**
+(`IS_RERUN, ICE_BUDGET = True, 300`), and my first version collected only `ast.Name` targets,
+missing `ast.Tuple`, so it reported "defined" as "dangling". **Only after fixing the checker did
+the conclusion above hold** — the same lesson again: **the tool used for verification must itself
+be verified**, or time gets spent "fixing" a non-problem.
+
+### 🔴 Correction 4: Tier 1's "9,500 queries" **cannot finish** — I had only counted the channel stage
+
+The table above wrote Tier 1 as "whole fold, 9,500 queries ⇒ ±0.001". **That was wrong**: I
+extrapolated from the **channel stage** alone (`pubchem channel: 2,012 s / 400 molecules`) and
+forgot the channel is only part of the pipeline. Recomputing from **measured end-to-end wall
+clock**:
+
+| Quantity | Value | Basis |
+|---|---|---|
+| Wall clock of one 400-molecule run | **~7,200 s (2 h)** | the observed range for this repo's `ctl` batch runs (2.0–2.8 h) |
+| Per molecule | **~18 s** | 7,200 / 400 |
+| Molecules inside a 9 h cap | **≈1,800** | 32,400 / 18 |
+
+⇒ **The whole fold (9,500) needs about 47 hours, more than 5× over the cap.** Turning ICE/GL off
+saves about 900 s per run (300 s ICE + 600 s GL), i.e. ~15.7 s/molecule ⇒ a ceiling near **2,060**
+molecules.
+
+**Corrected feasible configurations**:
+
+| Tier | Configuration | Queries | Paired s.e. (f=10%) | Note |
+|---|---|---|---|---|
+| Tier 1 | ICE/GL off | **~2,000** | **±0.0021** | ceiling ~2,060; 2,000 leaves margin |
+| Tier 2 | ICE/GL on | **~1,200** | ±0.0027 | ceiling ~1,800; 1,200 leaves margin |
+
+⇒ **A's real resolution is ±0.002, not the ±0.001 I claimed.** That is the same order as the LB's
+three decimals, **but no longer better**. It is still far better than "one policy per 5 hours" (a
+single run can compare several policies in a paired way); I simply have to lower the expectation
+from "better than the LB" to "comparable to the LB".
+
+**Cause of the error (same family as before)**: I extrapolated the **whole pipeline's** capacity
+from a **single stage's** duration instead of using the measured end-to-end wall clock. **A
+component's cost is not the system's cost.**
+
+### 🔴 Correction 5: a larger query set **silently starves ICE/GL** — the tiers cannot be split by on/off alone
+
+Continuing the arithmetic exposed a subtler problem: **`ICE_BUDGET` / `GL_BUDGET` are fixed
+wall-clock caps that do not scale with molecule count.**
+
+| Queries | ICE budget | Actual coverage | vs the real run (400 molecules / 71 covered) |
+|---:|---:|---|---|
+| 400 | 300 s | ~71 molecules | **identical** ✅ |
+| 2,000 | 300 s | still only ~71 | **coverage drops to 1/5** ❌ it measures a different pipeline |
+
+⇒ **Whenever ICE/GL are on, the query count must stay at 400**; otherwise I am not measuring "the
+same system on more molecules" but "a system whose forward models are starved". **This error does
+not raise — it just makes the baseline number uninterpretable.**
+
+**Scaling the budgets proportionally does not rescue it either**: 2,000 queries would need
+`ICE_BUDGET≈1,500` + `GL_BUDGET≈20,000` to hold coverage ⇒ those two alone are 6 h, and with the
+rest about 12 h, **over the 9 h cap**.
+
+**⇒ Faithfulness and statistical power cannot both be had.** So the tiers are not "off/on" but:
+
+| Purpose | Configuration | Queries | Paired s.e. | Why |
+|---|---|---|---|---|
+| **Calibration** (component 4) | `bt` / `bt_top1` / `bt_no_ice` | **400** | ±0.0047 | must match the real run's stage behaviour, or the calibration is meaningless |
+| **Tier 1 policy screening** (the workhorse) | `--degrade no_ice` | **2,000** | **±0.0021** | ICE/GL are **off by construction**, so no starvation |
+| **Tier 2** (ICE/GL-dependent policies) | `bt` | **400** | ±0.0047 | can only afford 400 queries; weak power but faithful behaviour |
+
+**The default `--limit` stays at 400**; Tier 1 is requested explicitly with
+`--limit 2000 --degrade no_ice`.
+
+---
+
+# Part V — The modelling line
+
+The largest single lever in the public ledger is **a better FPNet (+0.013)**, and that is precisely
+"something absent from public code" — `fpnet_full1` is already the public best, so going further
+means training our own.
+
+**The quantified business case (this is the decisive part)**: pulling the public ranker training
+features `prvsiyan/casmi26-ranker-features` (CC0, 9.6 MB) and measuring them:
+
+```
+rank_train.npz: X (142,762 × 31) float32 | Y {0,1} mean=0.0115 (1,638 positives)
+                M {0,1} | G groups 0..818  ->  only 819 query groups, ~174 candidates/group
+```
+
+**The entire second engine's ranker was trained on 819 queries**, with only ~2 positives per group.
+We hold **275,810 structures / 2,539,608 spectra** (and can use all of train's labels for free).
+
+⇒ **Going from 819 queries to tens of thousands is the most concrete original space on this line.**
+It needs no new data and no new architecture — only getting the training-row **generation** right
+(remove the held-out molecule's structure and spectra from both library and pool, run the engine to
+produce candidates and features, label by "is this candidate the held-out structure"). That is
+exactly what the V_A_hard fold in `docs/EXPERIMENTS.md` tried to do, except it was used for
+evaluation rather than training.
+
+### The training recipe, now readable
+
+`casmi26-v3-models` (411.9 MB) downloaded successfully, unpacking `code/casmi/` into 13 modules
+including **`engine.py` (26.4 KB)**, **`ranker.py`**, **`traindata.py`**, `library.py`, `pool.py`,
+`fpnet.py`, `frag.py`, `spectra.py`, `derive.py`, plus two 189.6 MB `fpnet_*.pt` files and
+`ranker_0.pkl` (13.5 MB).
+
+**① The ranker (`ranker.py`) — our metric is its metric**
+
+```python
+DEFAULT_PARAMS = dict(objective='lambdarank', learning_rate=0.03, num_leaves=63,
+    min_data_in_leaf=40, feature_fraction=0.7, bagging_fraction=0.8, lambda_l2=1.0,
+    lambdarank_truncation_level=30, label_gain=[0,1])   # rounds=600, seeds=(0,1,2,3) -> 4 boosters
+def mrr_at(pred, y, g, k=25):   # per-group reciprocal rank -- identical to MRR@25
+def cv_report(...):             # "Structure-grouped CV ... MRRs per (regime, fold)
+                                #  plus a calibrated LB estimate"
+```
+
+⇒ The author uses **structure-grouped** CV, reports MRR by **`regime`**, and **has already
+calibrated local CV to the LB score**. The `regime`/`fold` values come from `traindata.py`'s
+`holdout_folds=('np','nplib','syn','plusk','twin')` — i.e. **stratified by source** (natural
+products / NP libraries / synthetic / pluskal_ms2). **If the hidden set is dominated by the `np`
+stratum, training weights should lean that way.**
+
+**② FPNet (`traindata.py`) — the training objective is "rank first inside the window"**
+
+```python
+# positive = the true structure's index in the pool; negatives = K=63 sampled from the same ±10 ppm window
+def negatives(self, pos): ...
+# when the window is small (<8), mix in random decoys "so the softmax is not trivial"
+def window_mrr(model, D, ...):  # "MRR@K of the true structure inside its ±10ppm pool window"
+# augmentation: peak dropout, intensity jitter, ppm jitter (aug=True)
+```
+
+⇒ **Both FPNet and the ranker are optimised and evaluated only under "the truth is inside the
+±10 ppm window".** This matches the §9 decomposition exactly: **these two models own the ranking
+half; the recall half (the truth not being in the pool) was never their objective.**
+
+**③ The row-generation code is not in the pack** — `code/` holds only inference-side modules;
+`rank_train.npz` / `sim_rank_rows_*.npz` are pre-generated artifacts. So **we must write the row
+generator ourselves**, but the recipe is now clear:
+
+```
+for each held-out molecule (held out by structure, using their fold scheme):
+    C, X, F, names, info = V.run(spectra, target)     # the engine returns the 160 features directly
+    label[c] = 1 if C.key[c] == the held-out structure's key else 0
+=> (X, y, group=molecule) trained with DEFAULT_PARAMS as LambdaRank, evaluated with mrr_at
+```
+
+**Key judgement**: this route's ceiling depends on **how much "in-window ranking" can still
+improve** — and the public ranker already trained 600 rounds × 4 seeds × 63 leaves on exactly that
+objective. So **more queries will not necessarily improve in-window ranking**; the real space is
+more likely in §9's **recall half** (getting the truth into the window), which depends on
+FPNet/pool/analog, not on the ranker. ⇒ **The modelling line's first cut should be on the recall
+side, not the ranker side.**
+
+### The first project: **unify the two candidate universes**
+
+The pipeline actually contains **two mutually disconnected structure universes** with grossly
+unequal capability:
+
+| | Pool universe | Tier universe (PubChem) |
+|---|---|---|
+| Scale | 710k–775k | ~100M (7.2 GB, 150–1250 Da) |
+| Scorer | **v4b ranker: 160 features × 4 GBM × 600 rounds** | **only `f.z` (fingerprint dot product) + popularity** |
+| Path into the submission | the bulk of the 25 slots | only 5 tail slots (or a CLAW promotion to rank 1) |
+| Was a model trained for it? | yes (`mrr_at` is literally this task's metric) | **no** |
+
+**This is the direct source of §9's 45% recall gap**: molecules outside the pool depend on a
+channel for which **no model was ever trained**, and which is confined to 5 tail slots.
+
+⇒ **Project definition**: extend the ranker's feature extraction to tier candidates (the feasible
+subset: library similarity, FPNet `f.z`, formula match, popularity, **ICE/GL forward scores** —
+ICE/GL can score any SMILES), then **train a unified ranker over the union of both universes**, so
+tier candidates compete on evidence rather than occupying fixed slots.
+
+**Why this may be the only direction with real position**:
+- it is on the **recall** side (~0.19 of the score), not the ranking side;
+- it targets a channel **the public models never optimised** (both public models are trained only
+  under "the truth is inside the pool window");
+- pool expansion is closed by measurement (0.051%), and the tier is the only structure source left
+  that can expand.
+
+**Cost and risk (honest estimate)**:
+- it needs Kaggle runs for "held-out molecule → tier probe → features → labels" row generation,
+  **each consuming weekly quota**;
+- feature extraction requires modifying engine-side code — weeks of engineering;
+- **ceiling unknown**: if most of the missing 45% are novel analogs present in *no* public library
+  (§10 cause C), this project cannot save them either — the only route then is analog/generative
+  propagation.
+
+**So its status is "a large bet awaiting validation", not "the next thing to do".** Let the current
+cheap variants return first: if cheap versions of "let the tier take more positions" (`claw`,
+`pc_tail10`) work, then the tier really does contain answers and this project is worth the
+investment.
+
+**Discipline unchanged**: every modelling-line step must also be verifiable on the LB; until there
+is a reproducible ≥ +0.002 shift, it is a hypothesis like any other.
+
+---
+
+# Part VI — Reference
+
+## 21. Tools
+
+| Script | Purpose |
+|---|---|
+| `scripts/build_variant_kernel.py` | build a variant from `notebooks/v44_base/notebook.ipynb`; every replacement must hit exactly once |
+| `scripts/push_kernel.py` | push = save a version and trigger the batch run |
+| `scripts/wait_submit_report.py` | wait for COMPLETE → verify the output file exists → submit → poll the score |
+| `scripts/queue_variant.py` | queue a variant: wait for a free GPU session → push → wait → submit → report |
+| `scripts/check_variant_kernels.py` | compile every variant cell, reassemble + compile CLAW's CORE, and validate kernel metadata |
+| `scripts/diff_variant.py` | cell-by-cell, line-by-line diff of any variant against `notebooks/v44_base` |
+| `scripts/recover_test_truth.py` | recover **visible**-test truth (regression detection only; unrelated to the LB) |
+| `scripts/score_submission.py` | score any submission with the grader's tautomer InChIKey14 → MRR@25 + rank histogram |
+| `scripts/build_leakfree_folds.py` | build the structure-disjoint, source-stratified folds |
+| `scripts/build_backtest_queries.py` | build the backtest query set in the competition's exact schema |
+| `scripts/build_backtest_kernel.py` | build the backtest kernel and its calibration configurations |
+
+## 22. What not to do
+
+- Do not tune on statistics from the visible test — it is not the evaluation set.
+- Do not push several versions of the same kernel concurrently and then read `kernels/status`:
+  that endpoint is **per kernel** (latest version), so v1 and v2 misreport each other. One kernel
+  slug per variant is the only safe pattern.
+- Do not treat the champion dict as an "answer" to extend — it is the product of another public
+  reading, and its keys are the visible test's.
