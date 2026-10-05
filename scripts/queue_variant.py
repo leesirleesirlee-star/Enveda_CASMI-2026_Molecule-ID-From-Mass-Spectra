@@ -87,6 +87,47 @@ def output_files(owner, slug):
         return []
 
 
+# Lines worth surfacing from a batch-run log. The hidden rerun's log is not
+# retrievable, so the batch run (same code, public test) is the only place these
+# diagnostics can ever be read - and several of them exist purely to tell a real
+# null result apart from a silently broken run.
+DIAG_PATTERNS = ("V45 ", "merge stats", "ICE meta", "ICE FAILED", "GL meta", "GL FAILED",
+                 "lambda gate", "ICE rerank stats", "GL rerank stats", "fused (+ICE)",
+                 "locks applied", "pubchem lists", "PUBCHEM CHANNEL FAILED", "errors ")
+
+
+def harvest_log(owner, slug):
+    """Save the batch-run stdout and print the diagnostic lines."""
+    st, body = api(f"https://www.kaggle.com/api/v1/kernels/output?"
+                   f"userName={owner}&kernelSlug={slug}")
+    if st != 200:
+        log(f"could not fetch run log: HTTP {st}")
+        return
+    try:
+        raw = json.loads(body).get("log") or ""
+    except Exception:
+        raw = ""
+    if not raw:
+        log("run log empty")
+        return
+    try:
+        events = json.loads(raw)
+        text = "".join(e.get("data", "") for e in events
+                       if isinstance(e, dict) and e.get("stream_name") == "stdout")
+    except Exception:
+        text = raw
+    path = os.path.join(r"D:\CASMI竞赛\.deepworks\tmp", f"{slug}_batch.log")
+    open(path, "w", encoding="utf-8").write(text)
+    log(f"run log saved -> {path} ({len(text)} chars stdout)")
+    hits = [ln for ln in text.splitlines() if any(p in ln for p in DIAG_PATTERNS)]
+    if hits:
+        print("--- diagnostics ---", flush=True)
+        for ln in hits[-25:]:
+            print("   ", ln[:200], flush=True)
+    else:
+        log("no diagnostic lines matched - check the full log")
+
+
 def score_for(desc, deadline, poll):
     while time.time() < deadline:
         st, body = api(f"https://www.kaggle.com/api/v1/competitions/submissions/list/{COMP}")
@@ -141,6 +182,7 @@ def main():
         raise SystemExit(4)
     files = output_files(owner, slug)
     log(f"output files: {files[:8]}{' ...' if len(files) > 8 else ''}")
+    harvest_log(owner, slug)
     if a.file not in files:
         log(f"ABORT: {a.file} missing, refusing to submit")
         raise SystemExit(5)
