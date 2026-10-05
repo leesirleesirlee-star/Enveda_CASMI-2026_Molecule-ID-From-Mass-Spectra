@@ -1044,3 +1044,94 @@ conclusion whatever the outcome.**
 retire a correct route on the strength of broken evidence. And when porting a reference
 implementation, "copy that block" does not guarantee the **preconditions and external contracts**
 came along with it.
+
+---
+
+# 2026-10-05 (fourth segment) · 🔴 The fidelity check found a silent, load-bearing defect
+
+`scripts/check_pipeline_fidelity.py` compared the ablation run's own `submission.csv` against the
+reference output downloaded from the author's public run. It did **not** pass, and the reason turns
+out to invalidate every variant score this environment would have produced.
+
+## What the comparison showed
+
+| | reference | ours |
+|---|---:|---:|
+| bytes | 393,908 | **393,418** |
+| rows | 400 | 400 |
+| candidates | 9,772 | 9,772 |
+| per-row min/max | 3 / 25 | 3 / 25 |
+| rows differing | — | **365 of 400** |
+| **top-1 identical** | — | **393/400 (98.2%)** |
+
+Differences begin at rank 2 in 358 of the 365 rows; only 7 rows differ at rank 1. The *head* is
+faithful; the *tail* is not.
+
+## The cause, read from our own run log
+
+The run log became retrievable once the version produced output, and it contains this:
+
+```
+ICE meta {"status": "error", "n_mols": 400, "n_mols_scored": 0, "n_mols_covered": 0, "n_cands": 26156,
+          "errors": ["Traceback ... ice_runner.py, line 666, in main
+                        meta['rdkit'] = setup_env(a, log)
+                      ... line 83, in install_site
+                        raise RuntimeError('pip install failed: ' + r.stdout[-2000:])
+            RuntimeError: pip install failed:
+            Processing ./ice_site/.wheels/einops-0.8.2-py3-none-any.whl
+            ...
+            ERROR: rdkit-2025.3.6-cp312-cp312-manylinux_2_28_x86_64.whl is not a supported wheel
+                   on this platform."]}
+
+ICE rerank stats {'molecules': 0, 'changed_top25': 0, 'changed_top1': 0}
+GL rerank stats {'molecules': 0, 'changed_vs_ice_top25': 0, 'changed_vs_ice_top1': 0}
+merge stats {'untouched': 400, 'gentle': 0, 'aggressive': 0, 'no_pc': 0}
+fused (+ICE) submission written; top-1 changed in 0 | ICE reordered 0
+```
+
+**ICEBERG and GLACIER both fail at setup, and the notebook's `try/except` swallows it.** The
+submission is still written, still valid, and quietly missing the entire forward-model channel.
+
+The wheel is built for **cp312**; this Kaggle image runs **Python 3.13** — visible independently in
+the run's own output listing, which contains `__pycache__/probe_core2.cpython-313.pyc` and
+`.py313.nbc` numba caches.
+
+## Why this exactly explains the 365 rows
+
+The reference run's log says `ICE reordered 365`. Ours says `ICE reordered 0`. **The 365 differing
+rows are precisely the rows ICE/GL reorder when they work.** Top-1 agrees 98.2% precisely because
+ICE/GL never change top-1 (`changed_top1: 0` in both runs), so their absence leaves the head intact.
+
+This is not a subtle implementation difference — one stage of the pipeline is absent.
+
+## Why it matters more than a wrong number
+
+- **Our `ctl` is not the reference pipeline.** It is the reference pipeline minus ICE/GL, so no score
+  from this environment is comparable to 0.417 and no variant delta means anything.
+- **`icefull` would have been a vacuous experiment.** It only raises `ICE_BUDGET` — a knob on a stage
+  that errors out in four seconds regardless of its budget.
+- **A null `claw` result would have been misread.** We would have concluded "the CLAW promotion does
+  not help" from a run whose gate quantity comes from a channel that was, separately, degraded.
+
+## Action
+
+The queued `claw` variant was **halted** before it pushed. Environment first:
+
+1. determine whether the kernel can be pinned to a Python 3.12 image (the reference run's metadata
+   names one), or whether the runner can be given a cp313 RDKit;
+2. re-run `ctl` in the fixed environment and re-check fidelity — the criterion becomes "the 365 rows
+   stop differing", i.e. `ICE reordered` becomes non-zero;
+3. only then run variants.
+
+## The lesson
+
+This is the fourth instance of the same family in this project and the largest: **the failure was
+silent, the output was valid, and every downstream number would have looked plausible.** The
+notebook's stage-level `try/except` — which I had earlier praised as "pinning the worst case to the
+rollback baseline instead of zero" — is exactly what hid it. Graceful degradation is only safe when
+the degraded state is *observable*, and here it was observable only in a log field nobody reads
+(`"status": "error"` inside `ICE meta`).
+
+It also vindicates the fidelity check that the runbook listed as "item 0, do this once": it was the
+only thing in the pipeline that compared our output against a known-good one, and it caught a defect
+every internal consistency check was blind to.
