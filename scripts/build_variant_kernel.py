@@ -70,10 +70,30 @@ CLAW_DIAG = (
     'res[mid] = dict(pc=smis, pc_fz=fzs, pc_keys=keys, fz_top=d.get("fz_top"), '
     'S=d.get("S"), top_pop=d.get("top_pop", 0.0), **extra[mid])',
 )
-# cell 9: append the v17 probe so the gated quantities actually get computed
+# cell 9: append the v17 probe so the gated quantities actually get computed,
+# plus a read-only diagnostic wrapper. The batch run's log IS readable (unlike the
+# hidden rerun's), so this is our only chance to prove the popularity arrays are
+# aligned with the PubChem tier before we interpret any CLAW result.
+CLAW_ALIGN = '''
+
+# ---- V45 diagnostic (read-only): prove the popularity arrays line up with the tier ----
+_v45_init0 = init_worker
+
+
+def init_worker(pc_dir, bits_path, pool_meta_path, code_dir=None):
+    _v45_init0(pc_dir, bits_path, pool_meta_path, code_dir)
+    try:
+        _n_ls = len(_W['ls']) if 'ls' in _W else -1
+        _n_mass = len(_W['mass']) if 'mass' in _W else -1
+        print('V45 pop-align: pc_lsid=%d pc_mass=%d %s' % (
+            _n_ls, _n_mass, 'OK' if _n_ls == _n_mass and _n_ls > 0 else 'MISALIGNED'),
+            flush=True)
+    except Exception as _e:
+        print('V45 pop-align check failed:', repr(_e), flush=True)
+'''
 CLAW_APPEND = (
     "open('/kaggle/working/probe_core2.py', 'w').write(CORE)",
-    "_CLAW_PATCH = '''" + claw_patch() + "'''\n"
+    "_CLAW_PATCH = '''" + claw_patch() + CLAW_ALIGN + "'''\n"
     "CORE = CORE + _CLAW_PATCH\n"
     "open('/kaggle/working/probe_core2.py', 'w').write(CORE)",
 )
