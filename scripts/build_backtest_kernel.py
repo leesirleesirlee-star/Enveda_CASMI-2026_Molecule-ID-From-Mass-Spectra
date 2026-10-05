@@ -143,35 +143,48 @@ def _bt_mask_view(mask, sids, k2pid, key):
 '''
 
 # ---- cell 31: replace the champion lock with the MRR scorer -----------------
+# Cell 31 must not keep the lock: its keys are the real test's molecule_ids, which
+# cannot exist here, so it would raise KeyError and skip the rest of the notebook.
+# NOTE ON PLACEMENT: cell 32 rewrites submission.csv (clean_and_validate), so the
+# number printed here is the *pre-clean* one. A second call is appended after cell 32
+# and is the number to quote; this one exists so a cell-32 failure still leaves data.
 SCORER = '''# ---- V45 BACKTEST: MRR@25 of the backtest fold -------------------------------
 assert 'BT_TRUTH' in globals(), 'backtest query set was not built'
-_sub = pd.read_csv('submission.csv')
-_sub['molecule_id'] = _sub.molecule_id.astype(str)
-_truth = {m: k for m, k in BT_TRUTH.items()}
-_ranks = []
-for _m, _s in zip(_sub.molecule_id, _sub.smiles):
-    _t = _truth.get(_m)
-    if _t is None:
-        continue
-    _tk = chem.score_key(_t) or _t
-    _r = 0
-    for _i, _c in enumerate([x for x in str(_s).split(';') if x][:25], start=1):
-        if (chem.score_key(_c) or _c) == _tk:
-            _r = _i
-            break
-    _ranks.append(_r)
-_ranks = np.asarray(_ranks, dtype=float)
-_hit = _ranks > 0
-print()
-print('V45 BACKTEST RESULT')
-print(f'  molecules        {len(_ranks)}')
-print(f'  MRR@25           {np.mean(np.where(_hit, 1.0/np.maximum(_ranks,1), 0.0)):.4f}')
-print(f'  top-1            {np.mean(_ranks == 1):.4f}')
-print(f'  hit@25           {_hit.mean():.4f}')
-print(f'  rank histogram   1:{( _ranks==1).sum()} 2:{(_ranks==2).sum()} '
-      f'3-5:{((_ranks>=3)&(_ranks<=5)).sum()} 6-10:{((_ranks>=6)&(_ranks<=10)).sum()} '
-      f'11-25:{((_ranks>=11)&(_ranks<=25)).sum()} miss:{(_ranks==0).sum()}')
-print('V45 BACKTEST DONE', flush=True)'''
+
+
+def bt_score(tag):
+    _sub = pd.read_csv('submission.csv')
+    _sub['molecule_id'] = _sub.molecule_id.astype(str)
+    _ranks = []
+    for _m, _s in zip(_sub.molecule_id, _sub.smiles):
+        _t = BT_TRUTH.get(_m)
+        if _t is None:
+            continue
+        _tk = chem.score_key(_t) or _t
+        _r = 0
+        for _i, _c in enumerate([x for x in str(_s).split(';') if x][:25], start=1):
+            if (chem.score_key(_c) or _c) == _tk:
+                _r = _i
+                break
+        _ranks.append(_r)
+    _ranks = np.asarray(_ranks, dtype=float)
+    _hit = _ranks > 0
+    print()
+    print(f'V45 BACKTEST RESULT [{tag}]')
+    print(f'  molecules        {len(_ranks)}')
+    print(f'  MRR@25           {np.mean(np.where(_hit, 1.0/np.maximum(_ranks,1), 0.0)):.4f}')
+    print(f'  top-1            {np.mean(_ranks == 1):.4f}')
+    print(f'  hit@25           {_hit.mean():.4f}')
+    print(f'  rank histogram   1:{(_ranks==1).sum()} 2:{(_ranks==2).sum()} '
+          f'3-5:{((_ranks>=3)&(_ranks<=5)).sum()} 6-10:{((_ranks>=6)&(_ranks<=10)).sum()} '
+          f'11-25:{((_ranks>=11)&(_ranks<=25)).sum()} miss:{(_ranks==0).sum()}')
+    print(f'V45 BACKTEST DONE [{tag}]', flush=True)
+
+
+bt_score('pre-clean')'''
+
+# appended after cell 32, which rewrites submission.csv
+SCORER_TAIL = "bt_score('final')"
 
 
 def main():
@@ -210,6 +223,9 @@ def main():
 
     assert "_champion_top1" in "".join(cells[31]["source"]), "cell 31 is not the lock cell"
     setsrc(31, SCORER)
+    # cell 32 rewrites submission.csv, so score the final artefact too
+    cells.append({"cell_type": "code", "execution_count": None, "metadata": {},
+                  "outputs": [], "source": SCORER_TAIL.splitlines(keepends=True)})
 
     # --- calibration cripples (component 4) ---------------------------------
     if a.degrade == "top1":
