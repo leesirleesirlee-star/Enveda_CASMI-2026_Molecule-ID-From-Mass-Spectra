@@ -1,4 +1,4 @@
-﻿"""
+"""
 Build the leak-free backtest kernel (Method A, component 3).
 
 Derived from notebooks/v44_base/notebook.ipynb with four changes:
@@ -28,7 +28,7 @@ import argparse
 import json
 import os
 
-ROOT = r"D:\CASMI绔炶禌"
+ROOT = r"D:\CASMI竞赛"
 SRC = os.path.join(ROOT, "notebooks", "v44_base", "notebook.ipynb")
 COMP = "enveda-CASMI26-molecule-id-mass-spectra"
 DATASETS = [
