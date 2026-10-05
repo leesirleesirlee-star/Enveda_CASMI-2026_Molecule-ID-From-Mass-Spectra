@@ -48,6 +48,74 @@ ICE_LINE = "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 300, True"
 SLOTS_LINE = "SLOTS_AGG, SLOTS_GENTLE = [2, 4, 6, 8, 10], [4, 8, 12, 16, 20]"
 RELTH_LINE = "LIB_TAU, REL_TH = 0.9, 600.0"
 
+CLAW_PATCH_PATH = os.path.join(ROOT, "notebooks", "v45", "_claw_patch.py")
+
+
+def claw_patch() -> str:
+    """The v17 popularity probe (CLAW's S / top_pop / fz_top producers)."""
+    body = open(CLAW_PATCH_PATH, encoding="utf-8").read()
+    assert "'''" not in body and '"""' not in body, \
+        "patch contains a triple quote and would break the string literal it is inlined into"
+    assert "\\" not in body, "patch contains a backslash; escape it before inlining"
+    for need in ("def init_worker(", "def probe_one(", "fz_top", "top_pop"):
+        assert need in body, f"CLAW patch lacks {need!r}"
+    return body
+
+
+# cell 9: persist the three CLAW quantities that pc_runner currently throws away.
+# NOTE: this text lands *inside* a single-quoted string literal, so it must not
+# contain a bare single quote - hence the double quotes around the dict keys.
+CLAW_DIAG = (
+    "res[mid] = dict(pc=smis, pc_fz=fzs, pc_keys=keys, **extra[mid])",
+    'res[mid] = dict(pc=smis, pc_fz=fzs, pc_keys=keys, fz_top=d.get("fz_top"), '
+    'S=d.get("S"), top_pop=d.get("top_pop", 0.0), **extra[mid])',
+)
+# cell 9: append the v17 probe so the gated quantities actually get computed
+CLAW_APPEND = (
+    "open('/kaggle/working/probe_core2.py', 'w').write(CORE)",
+    "_CLAW_PATCH = '''" + claw_patch() + "'''\n"
+    "CORE = CORE + _CLAW_PATCH\n"
+    "open('/kaggle/working/probe_core2.py', 'w').write(CORE)",
+)
+# cell 3: the gate constants
+CLAW_CONST = (
+    "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 300, True",
+    "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 300, True\n"
+    "USE_PROMOTION, S_TAU, POP_TAU = True, 6.0, 5.0  # V45 CLAW (lehau007 v27 / bobthebot369 v17)",
+)
+# cell 19: the promotion helper
+CLAW_PROMOTE = (
+    "    return out\nrows, stats = [], dict(untouched=0, gentle=0, aggressive=0, no_pc=0)",
+    "    return out\n\n\n"
+    "def promote(base, base_keys, pc, pc_keys, slots, n=25):\n"
+    "    \"\"\"CLAW b417: a confident PubChem-only proposal leads; every other entry keeps its slot.\"\"\"\n"
+    "    usual = merge(base, base_keys, pc, pc_keys, slots, n=n)\n"
+    "    if not pc:\n"
+    "        return usual\n"
+    "    top = pc[0]\n"
+    "    return ([top] + [x for x in usual if x != top])[:n]\n\n\n"
+    "rows, stats = [], dict(untouched=0, gentle=0, aggressive=0, no_pc=0)",
+)
+# cell 19: the gate itself (replaces the unconditional merge)
+CLAW_GATE = (
+    """        rel = p['pc_fz'][0] - p['best_pool_fz'] if np.isfinite(p['best_pool_fz']) else 1e9
+        slots = SLOTS_AGG if rel > REL_TH else SLOTS_GENTLE
+        stats['aggressive' if rel > REL_TH else 'gentle'] += 1
+        final = merge(smis, keys, p['pc'], p['pc_keys'], slots)""",
+    """        _bp = p.get('best_pool_fz')
+        _tf = p.get('fz_top') if p.get('fz_top') is not None else (p['pc_fz'][0] if p.get('pc_fz') else None)
+        rel = (_tf - _bp) if (_tf is not None and _bp is not None and np.isfinite(_bp)) else 1e9
+        slots = SLOTS_AGG if rel > REL_TH else SLOTS_GENTLE
+        stats['aggressive' if rel > REL_TH else 'gentle'] += 1
+        _S = p.get('S'); _pt = float(p.get('top_pop', 0.0) or 0.0)
+        if USE_PROMOTION and _S is not None and float(_S) > S_TAU and _pt >= POP_TAU:
+            stats['promoted'] = stats.get('promoted', 0) + 1
+            final = promote(smis, keys, p['pc'], p['pc_keys'], slots)
+        else:
+            final = merge(smis, keys, p['pc'], p['pc_keys'], slots)""",
+)
+POP_MU_LINE = "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.15"
+
 NOLOCK_CELL = """# V45 ablation: champion top-1 lock DISABLED.
 # The V44 lock dict is keyed on the *visible* test's molecule_ids; if the rerun
 # test differs that lookup raises KeyError and the notebook dies before the final
@@ -80,6 +148,22 @@ VARIANTS["combo_a"] = VARIANTS["icefull"] + [
 VARIANTS["combo_b"] = VARIANTS["icefull"] + VARIANTS["pc_aggressive"]
 VARIANTS["topn120"] = [
     (3, ICE_LINE, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 120, 1.0, 3600, True"),
+]
+
+# --- CLAW: the field's only rank-1-moving lever (see docs/V45_消融手册.md) ---
+CLAW_EDITS = [
+    (3, CLAW_CONST[0], CLAW_CONST[1]),
+    (9, CLAW_DIAG[0], CLAW_DIAG[1]),
+    (9, CLAW_APPEND[0], CLAW_APPEND[1]),
+    (19, CLAW_PROMOTE[0], CLAW_PROMOTE[1]),
+    (19, CLAW_GATE[0], CLAW_GATE[1]),
+]
+VARIANTS["claw"] = CLAW_EDITS
+VARIANTS["claw_pop30"] = CLAW_EDITS + [
+    (3, POP_MU_LINE, "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.30"),
+]
+VARIANTS["pop30"] = [
+    (3, POP_MU_LINE, "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.30"),
 ]
 
 
