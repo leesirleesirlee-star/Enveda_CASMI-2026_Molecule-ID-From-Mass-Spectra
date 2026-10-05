@@ -274,7 +274,8 @@ after scanning 2,539,608 train rows:
 ## 2026-10-03 · ⛔ Blocked: Kaggle credentials lack write permission, cannot submit
 
 ### Implemented and verified
-- Self-contained submission notebook (`notebooks/kaggle_submission/`), offline-capable, no RDKit
+- Self-contained submission notebook (since removed; `scripts/build_notebook.py` regenerates it),
+  offline-capable, no RDKit
 - First valid `outputs/submission.csv`: 400 rows, 24–25 candidates per molecule, format check VALID
 - Notebook-embedded code vs local modules: **top-1 identical for all 400 molecules**
 
