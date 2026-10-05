@@ -1,91 +1,140 @@
-这两个高分方案的核心思路，都指向了同一个关键洞察：**要突破0.3的分数瓶颈，必须从“纯检索”转向“检索+可控生成”的混合架构**，并且要对**候选池的排序精度**进行极其精细的控制。
+# Notes on two high-scoring solutions
+
+> **Historical input document.** These are working notes written while studying two public
+> solutions, before we had measured anything ourselves. They are kept as written — several
+> interpretations here were later corrected by measurement (see
+> [`PLAYBOOK.md`](PLAYBOOK.md) and [`EXPERIMENTS.md`](EXPERIMENTS.md)). Where a claim below
+> turned out wrong, that is noted in the margin rather than edited into the text.
+
+The core idea of both high-scoring solutions points at the same insight: **breaking through the
+0.3 score barrier requires moving from "pure retrieval" to a hybrid "retrieval + controlled
+generation" architecture**, with extremely fine control over **the ranking precision of the
+candidate pool**.
 
 ---
 
-## 🏔️ 方案一：CASMI26 Fusion GLACIER MH（LB 0.413）
+## 🏔️ Solution 1: CASMI26 Fusion GLACIER MH (LB 0.413)
 
-这个方案（gengsr）公开分数 **0.413**，是当前讨论区已知的最高分。从它的输入数据集可以看出其架构轮廓：
+This solution (gengsr) scores a public **0.413**, the highest known in the discussion forum at the
+time. Its input datasets outline the architecture:
 
-| 输入资产 | 用途推断 |
+| Input asset | Inferred purpose |
 |---|---|
-| CASMI26 fingerprint models | 谱图→分子指纹预测 |
-| CASMI26 PubChem Popularity Prior | 候选的“流行度”先验（PubChem中常见结构加分） |
-| CASMI26 ranker training features | 重排器训练特征（公开） |
-| CASMI26 Simulated Ranker Rows | 模拟的重排训练数据 |
+| CASMI26 fingerprint models | spectrum → molecular fingerprint prediction |
+| CASMI26 PubChem Popularity Prior | a "popularity" prior over candidates (structures common in PubChem score higher) |
+| CASMI26 ranker training features | reranker training features (public) |
+| CASMI26 Simulated Ranker Rows | simulated reranker training data |
 
-**“Fusion”的含义**：这是一个**多通道证据融合**的排序系统。它可能融合了：
-1. **指纹预测相似度**（从谱图预测指纹，与候选分子的真实指纹比对）
-2. **谱图检索相似度**（修正余弦/中性丢失）
-3. **PubChem流行度先验**（在PubChem中越常见的结构，越可能是正确答案的弱先验）
-4. **模拟重排行**（用模拟数据增强重排器的训练）
+**What "Fusion" means**: this is a **multi-channel evidence fusion** ranking system. It likely
+fuses:
+1. **Predicted-fingerprint similarity** (predict a fingerprint from the spectrum, compare against
+   the candidate's true fingerprint)
+2. **Spectral retrieval similarity** (modified cosine / neutral losses)
+3. **A PubChem popularity prior** (a weak prior: the more common a structure is in PubChem, the
+   more likely it is the answer)
+4. **Simulated rerank rows** (augmenting reranker training with simulated data)
 
-**“GLACIER MH”** 很可能指 **GLACIER**（一个已知的质谱检索/重排工具）的某种变体或集成。整体是一个**极其工程化的融合排序系统**，而不是单一的模型。
+**"GLACIER MH"** most likely refers to some variant or ensemble of **GLACIER** (a known mass-spectra
+retrieval/reranking tool). Overall this is a **heavily engineered fusion ranking system**, not a
+single model.
 
-**可学习的关键点**：
-- 重排器的训练数据可以通过**模拟**来增强，而不必完全依赖真实的训练集谱图。这解决了“谱图-结构配对数据少”的问题。
-- 引入 **PubChem流行度先验** 作为弱特征，这是一个简单但有效的技巧——在同等证据下，越常见的结构越可能被测试集选中。
-- “Fusion”意味着**多通道证据的加权融合**，权重可能通过重排器自动学习。
+**Transferable points**:
+- Reranker training data can be augmented by **simulation** rather than relying entirely on real
+  training-set spectra. That addresses the shortage of spectrum–structure pairs.
+- Introducing a **PubChem popularity prior** as a weak feature is a simple, effective trick — given
+  equal evidence, more common structures are more likely to be the test set's choice.
+- "Fusion" means **weighted fusion of multi-channel evidence**, with weights possibly learned by
+  the reranker itself.
 
+## 🔒 Solution 2: CASMI26 V44 Pairtail Locked Top1
 
-## 🔒 方案二：CASMI26 V44 Pairtail Locked Top1
+The notebook could not be opened directly, but **"Pairtail Locked"** and **"Top1"** in the title
+hint at the core strategy.
 
-虽然这个notebook无法直接打开，但标题中的 **“Pairtail Locked”** 和 **“Top1”** 暗示了其核心策略。
+**"Pairtail"** most likely refers to **the tail of candidate pairs** — i.e. lower-ranked
+candidates. **"Locked"** may mean some kind of **locking mechanism** applied to tail candidates.
 
-**“Pairtail”** 很可能指**候选对的尾部**——即排名靠后的候选。**“Locked”** 可能意味着对尾部候选施加了某种**锁定机制**。
+Combined with discussion-forum threads on **"Confidence-Gated Analog Generation"** and
+**"Protected Bio-DB Tail"**, the logic is likely:
 
-结合CASMI 2026讨论区中关于 **“Confidence-Gated Analog Generation”** 和 **“Protected Bio-DB Tail”** 的讨论，这个方案的逻辑很可能是：
+> **Apply a "protective lock" to the top-N candidates from the retrieval engine, apply generative
+> augmentation or analog substitution only to tail candidates, and allow generated candidates into
+> the leading ranks only at high confidence.**
 
-> **对检索主引擎输出的Top-N候选进行“保护性锁定”，只对尾部（tail）的候选进行生成式增强或类似物替换，并且只有在高置信度时才允许生成候选进入前列。**
+This matches the **confidence gating** strategy discussed earlier: **the shape of the MRR score
+means that a wrong generated candidate displacing a correct one costs dearly. So the generative
+module must be confined to "tail slots", and only strong evidence may let it "move up".**
 
-这与之前讨论的**置信度门控（confidence gating）** 策略完全一致：**MRR的评分形状决定了，错误的生成候选挤占正确候选的排名会造成严重损失。因此，必须把生成模块限制在“尾部槽位”，并且只有强证据才允许它“上位”。**
+**"V44"** probably means the 44th iteration, implying heavy experimental tuning.
 
-**“V44”** 可能表示这是第44次迭代版本，说明这是一个经过大量实验调优的方案。
+> **Later correction.** The actual V44 contains no generative module at all. "Pairtail" refers to a
+> PairTail LambdaRank model (0.15 weight, tail-only) inside the second engine, and "Locked Top1" to
+> a hard-coded top-1 lock that we later proved **never fires** on the hidden set
+> ([`PLAYBOOK.md`](PLAYBOOK.md) §15). The confidence-gating intuition here was right in spirit but
+> attributed to the wrong mechanism.
 
+## 🧬 The shared underlying logic
 
-## 🧬 两个方案的共同底层逻辑
+Despite different implementation details, both solutions share these strategies:
 
-这两个高分方案虽然实现细节不同，但共享以下核心策略：
+### Retrieval first, generation second (but generation tightly controlled)
 
-### 检索为主，生成为辅（但生成被精确控制）
+The strongest public solutions' main engine is **still retrieval + reranking**, but the generative
+module is **strictly confined to tail slots** and needs **confidence gating** to reach a high rank.
+This agrees with the direction of PRD v2.1 ("retrieval first, generation second") but executes it
+far more carefully.
 
-当前公开最强方案的主引擎**仍然是检索+重排**，但生成模块被**严格限制在尾部槽位**，并且需要**置信度门控**才允许进入高排名。这与你的 PRD v2.1“检索为主，生成为辅”的方向一致，但执行上更加精细。
+### Reranker feature engineering is where the points come from
 
-### 重排器的特征工程是提分核心
+Both solutions invest heavily in the reranker:
+- **Multi-channel evidence** (predicted fingerprints, spectral similarity, fragment explanation,
+  popularity prior)
+- **Simulated training data** (augmenting reranker training with simulated spectra)
+- **Tiered candidate pools** (candidates from different sources carry different prior weights)
 
-两个方案都在重排器上投入了大量工程：
-- **多通道证据**（指纹预测、谱图相似度、碎片解释度、流行度先验）
-- **模拟训练数据**（用模拟谱图增强重排器训练）
-- **分层候选池**（不同来源的候选有不同的先验权重）
+### A candidate pool's "quality" matters more than its "quantity"
 
-### 候选池的“质量”比“数量”更重要
+The **"candidate dilution"** problem repeatedly raised in the forum is taken seriously in both.
+Neither simply dumps every possible structure into the pool; both **manage and rank in tiers**.
 
-讨论区反复强调的 **“候选稀释”** 问题，在这两个方案中都被认真对待。它们不是简单地把所有可能的结构丢进候选池，而是**分层管理、分层排序**。
+### Targeted optimisation for natural-product dark chemical space
 
-### 对天然产物暗化学空间的针对性优化
+Together with hengck23's earlier post, both solutions most likely **tiered their candidate pools
+specifically for natural products**, rather than concentrating all resources on Enveda-180's
+synthetic molecules.
 
-结合之前 hengck23 的帖子，这两个高分方案很可能都**专门针对天然产物做了候选池分层**，而不是把所有资源集中在 Enveda-180 的合成分子上。
+## 📚 Specific knowledge to acquire
 
-
-## 📚 你需要学习的具体知识
-
-| 知识领域 | 具体内容 | 与这两个方案的关联 |
+| Area | Content | Link to these solutions |
 |---|---|---|
-| **多通道证据融合** | 如何设计、加权、训练一个融合多个弱特征的重排器 | Fusion GLACIER 的核心 |
-| **置信度门控** | 如何用模型输出概率决定生成候选是否允许进入高排名 | Pairtail Locked 的核心 |
-| **模拟数据增强** | 如何用模拟谱图/模拟候选对来训练重排器 | “Simulated Ranker Rows” |
-| **流行度先验** | PubChem等数据库中的化合物频率作为特征 | “PubChem Popularity Prior” |
-| **候选池分层** | 按来源（合成/天然产物/暗化学空间）分层管理候选 | 两个方案都隐含此策略 |
-| **重排器特征工程** | 指纹相似度、碎片覆盖率、中性丢失匹配数等特征的构建 | 两个方案的重排器输入 |
+| **Multi-channel evidence fusion** | how to design, weight and train a reranker over many weak features | the core of Fusion GLACIER |
+| **Confidence gating** | using model output probability to decide whether generated candidates may rank highly | the core of Pairtail Locked |
+| **Simulated data augmentation** | training a reranker on simulated spectra / simulated candidate pairs | "Simulated Ranker Rows" |
+| **Popularity priors** | compound frequency in databases such as PubChem as a feature | "PubChem Popularity Prior" |
+| **Tiered candidate pools** | managing candidates in tiers by source (synthetic / natural product / dark chemical space) | implied by both |
+| **Reranker feature engineering** | building features such as fingerprint similarity, fragment coverage, neutral-loss match counts | the rerankers' inputs in both |
 
+## 🎯 Direct implications for our project
 
-## 🎯 对你项目的直接启示
+1. **Reranker training data can be augmented by simulation**: no need to rely entirely on real
+   training-set spectra. In-silico fragmentation of known structures can generate large numbers of
+   training samples.
 
-1. **重排器的训练数据可以模拟增强**：不必完全依赖真实的训练集谱图。你可以用已知结构的 in-silico 碎裂模拟谱图，生成大量训练样本。
+2. **Introduce a PubChem popularity prior**: a low-cost, plausibly effective weak feature. Given
+   equal evidence, more common structures are more likely to be the test set's choice.
 
-2. **引入 PubChem 流行度先验**：这是一个低成本、可能有效的弱特征。在同等证据下，越常见的结构越可能被测试集选中。
+3. **Apply a "protective lock" to tail candidates**: do not let generated candidates freely enter
+   the leading ranks. Allow them into tail slots only when the retrieval candidates are clearly
+   insufficient (a high-confidence signal).
 
-3. **对尾部候选做“保护性锁定”**：不要让生成候选自由进入前排名。只在检索候选明显不足时（高置信度信号），才允许生成候选进入尾部槽位。
+4. **Manage the candidate pool in tiers**: do not rank candidates from all sources together. Tier
+   by source (Enveda-180, natural-product spectral libraries, natural-product structure libraries),
+   rank within tiers, then fuse.
 
-4. **分层管理候选池**：不要把所有来源的候选混在一起排序。按来源（Enveda-180、天然产物谱图库、天然产物结构库）分层，分别排序后再融合。
+5. **Pursue the "simulated rerank rows" idea**: pretrain the reranker on simulated
+   spectrum–candidate pairs, then fine-tune on real data. This may be the key to the shortage of
+   paired data.
 
-5. **关注“模拟重排行”这个思路**：用模拟的谱图-候选对来预训练重排器，再用真实数据微调。这可能是解决“配对数据少”问题的关键。
+> **Later correction.** Points 2, 3 and 5 are the ones that survived contact with measurement.
+> Point 1 became the basis of our leak-free backtest, and point 4 was closed by measurement: pool
+> expansion adds only 0.051% ([`PLAYBOOK.md`](PLAYBOOK.md) §13).

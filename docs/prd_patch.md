@@ -1,123 +1,168 @@
-# PRD v2.1 补丁：天然产物暗化学空间定向修正
+# PRD v2.1 patch: targeted correction toward natural-product dark chemical space
 
-**补丁版本**：v1.0  
-**日期**：2026-10-04  
-**适用 PRD**：CASMI 2026 本地轻量级版 v2.1  
-**触发来源**：Kaggle 讨论区 745029（hengck23）及系列讨论分析  
-**核心修正**：测试集真正目标可能是**天然产物暗化学空间**，而非 Enveda-180 药物样分子。检索库、候选池、验证集、重排器训练数据均需相应调整。
+**Patch version**: v1.0
+**Date**: 2026-10-04
+**Applies to**: CASMI 2026 local lightweight edition v2.1
+**Triggered by**: Kaggle discussion 745029 (hengck23) and the surrounding thread
+**Core correction**: the test set's real target may be **natural-product dark chemical space**,
+not Enveda-180's drug-like molecules. The retrieval library, candidate pool, validation sets and
+reranker training data must all be adjusted accordingly.
 
+> **Historical input document.** This is a design patch written before we had measured anything.
+> Margin notes below record where later measurement confirmed, qualified, or refuted each claim.
+> The text itself is kept as written.
 
-## 一、关键认知更新
+## 1. Key updates to our understanding
 
-1. **竞赛描述中的 "natural product structures" 是核心线索**。Enveda 关注的是**不在现有数据库中的天然代谢物**，即“暗化学空间”。
-2. **公开 test.parquet 是 enveda-180 样本，与训练集逐字节相同**，但 enveda-180 是**药物样筛选化学**，不是决定奖项的天然产物。
-3. **Class 3 同时不在 PubChem 和 COCONUT 中**，说明真正的新颖分子是天然产物类似物或全新天然骨架。
-4. **timsTOF 仪器**（测试集采集设备）专为复杂天然产物分析设计，进一步支持这一判断。
-5. **推荐天然产物数据库**：COCONUT、LOTUS、NPAtlas。
-6. **推荐参考工作**：MS2Mol（从头预测天然代谢物）、EnvedaDark（226 个暗化学空间天然产物基准）。
+1. **"natural product structures" in the competition description is the central clue.** Enveda
+   cares about **natural metabolites not present in existing databases** — "dark chemical space".
+2. **The public `test.parquet` is an enveda-180 sample, byte-identical to the training set**, but
+   enveda-180 is **drug-like screening chemistry**, not the natural products that decide the award.
+   > **Confirmed later**, and it is the single most consequential fact in the project: the visible
+   > test set is a decoy ([`PLAYBOOK.md`](PLAYBOOK.md) §2).
+3. **Class 3 is in neither PubChem nor COCONUT**, implying the genuinely novel molecules are
+   natural-product analogs or entirely new natural-product scaffolds.
+   > **Confirmed and central**: it became cause C of our recall-gap decomposition
+   > ([`PLAYBOOK.md`](PLAYBOOK.md) §10).
+4. **The timsTOF instrument** (used to acquire the test set) is designed for complex natural-product
+   analysis, further supporting this reading.
+   > **Confirmed** against the data.
+5. **Recommended natural-product databases**: COCONUT, LOTUS, NPAtlas.
+   > **Partly closed by measurement**: LOTUS ∪ NPAtlas adds only **373 structures (0.051%)** over
+   > train ∪ COCONUT, so this route has almost no headroom
+   > ([`PLAYBOOK.md`](PLAYBOOK.md) §13 item 2).
+6. **Recommended reference work**: MS2Mol (de-novo prediction of natural metabolites), EnvedaDark
+   (a 226-compound dark-chemical-space natural-product benchmark).
 
+## 2. Specific changes to each PRD section
 
-## 二、对 PRD 各章节的具体修改
+### 2.1 Section 3, system architecture: tiered retrieval library
 
-### 2.1 第 3 章 系统架构：检索库分层
+**Original PRD**: the retrieval library comes from training-set spectra with no source distinction.
 
-**原 PRD**：检索库来自训练集谱图，未区分来源。
+**Patch**:
 
-**补丁**：
+- Build the retrieval library **in tiers by source**:
+  - **Layer A**: Enveda-180 synthetic-molecule spectra (the bulk of the current training set).
+  - **Layer B**: public natural-product spectra (the natural-product subset of MassBank, GNPS, MoNA).
+  - **Layer C**: natural-product structure databases (COCONUT, LOTUS, NPAtlas), indexed by formula,
+    serving as a spectrum-less candidate source.
+- Retrieve from each **separately**, keeping source labels so the reranker can distinguish them.
+- Do **not** mix Layer A's synthetic molecules directly into the natural-product candidate pool —
+  that causes "candidate dilution".
+  > **Qualified later**: candidate dilution turned out to be a much smaller effect than feared —
+  > the pool window holds only ~65 candidates per molecule, so `TOPN=60` barely cuts anything
+  > ([`PLAYBOOK.md`](PLAYBOOK.md) §10, cause A).
 
-- 将检索库按来源**分层构建**：
-  - **Layer A**：Enveda-180 合成分子谱图（现有训练集主体）。
-  - **Layer B**：公共天然产物谱图（MassBank、GNPS、MoNA 中的天然产物子集）。
-  - **Layer C**：天然产物结构数据库（COCONUT、LOTUS、NPAtlas），按分子式索引，作为无谱图候选来源。
-- 检索时**分别召回**，保留来源标签，供重排器区分。
-- **不要**将 Layer A 的合成分子直接混入天然产物候选池，避免“候选稀释”。
+### 2.2 Section 3.3, multi-channel evidence scoring: new natural-product features
 
-### 2.2 第 3.3 节 多通道证据评分：新增天然产物特征
+**Patch**: add the following features to the evidence score:
 
-**补丁**：在证据评分中新增以下特征：
-
-| 特征 | 说明 |
+| Feature | Description |
 |---|---|
-| **来源标签** | 候选来自合成库 / 天然产物谱图库 / 天然产物结构库 |
-| **天然产物骨架匹配** | 候选是否含有常见天然产物骨架（如萜类、生物碱、黄酮等） |
-| **COCONUT/LOTUS/NPAtlas 命中** | 候选是否在这些数据库中出现 |
-| **暗化学空间倾向** | 候选是否不在 PubChem 中（Class 3 信号） |
+| **Source label** | whether the candidate comes from a synthetic library / natural-product spectral library / natural-product structure library |
+| **Natural-product scaffold match** | whether the candidate contains common natural-product scaffolds (terpenoids, alkaloids, flavonoids, …) |
+| **COCONUT/LOTUS/NPAtlas hit** | whether the candidate appears in those databases |
+| **Dark-chemical-space tendency** | whether the candidate is absent from PubChem (the Class 3 signal) |
 
-### 2.3 第 3.4 节 学习型重排：负样本来源调整
+### 2.3 Section 3.4, learned reranking: adjusting negative-sample sources
 
-**原 PRD**：负样本为同分子式下的其他候选。
+**Original PRD**: negatives are other candidates sharing the molecular formula.
 
-**补丁**：
+**Patch**:
 
-- 负样本必须**包含天然产物类似物**，而不仅仅是合成分子。
-- 按来源分层构建训练集：确保重排器学到“天然产物 vs 合成分子”的区分能力。
-- 在验证时**按来源分层报告 MRR@25**，而不仅是总体分数。
+- Negatives must **include natural-product analogs**, not only synthetic molecules.
+- Build the training set stratified by source, so the reranker learns to distinguish
+  "natural product vs synthetic molecule".
+- When validating, **report MRR@25 stratified by source**, not only the overall score.
 
-### 2.4 第 4 章 验证策略：新增天然产物分层验证
+### 2.4 Section 4, validation strategy: add natural-product-stratified validation
 
-**补丁**：在原有分子骨架不相交验证基础上，新增：
+**Patch**: on top of the existing scaffold-disjoint validation, add:
 
-- **来源分层验证**：将验证集分为“合成分子子集”和“天然产物子集”，分别报告 MRR@25。
-- **暗化学空间验证集**：参考 EnvedaDark（226 个天然产物），构建内部 Class 3 验证集，测试生成模块。
-- **DreaMS 探针实验版本 4**：参考数据集加入 COCONUT / LOTUS / NPAtlas，与 MassSpecGym、Enveda-180、非 Enveda-180 对比覆盖率。
+- **Source-stratified validation**: split the validation set into a "synthetic subset" and a
+  "natural-product subset", and report MRR@25 for each.
+- **Dark-chemical-space validation set**: following EnvedaDark (226 natural products), build an
+  internal Class 3 validation set to test the generative module.
+- **DreaMS probe experiment version 4**: add COCONUT / LOTUS / NPAtlas to the reference datasets
+  and compare coverage against MassSpecGym, Enveda-180 and non-Enveda-180.
+  > **Superseded**: this probe line was replaced by the leak-free backtest
+  > ([`PLAYBOOK.md`](PLAYBOOK.md) §20).
 
-### 2.5 第 5 章 实施阶段：新增天然产物数据准备
+### 2.5 Section 5, implementation phases: add natural-product data preparation
 
-**阶段 0 新增**：
+**New in phase 0**:
 
-- [ ] 下载 COCONUT、LOTUS、NPAtlas 结构数据，按分子式索引。
-- [ ] 从训练集中分离天然产物来源谱图（MassBank、GNPS、MoNA）。
-- [ ] 运行 DreaMS 探针实验版本 1–4，量化各参考数据集对测试集的覆盖率。
-- [ ] 调研 MS2Mol 架构与 EnvedaDark 基准。
+- [ ] Download COCONUT, LOTUS, NPAtlas structures and index them by formula.
+- [ ] Separate natural-product-source spectra (MassBank, GNPS, MoNA) out of the training set.
+- [ ] Run DreaMS probe experiment versions 1–4 to quantify each reference dataset's coverage of the
+      test set.
+- [ ] Study the MS2Mol architecture and the EnvedaDark benchmark.
 
-**阶段 2 新增**：
+**New in phase 2**:
 
-- [ ] 检索库分层构建：Layer A / B / C。
-- [ ] 重排器加入来源标签与天然产物特征。
-- [ ] 按来源分层评估重排效果。
+- [ ] Tiered retrieval library construction: Layer A / B / C.
+- [ ] Add source labels and natural-product features to the reranker.
+- [ ] Evaluate reranking stratified by source.
 
-**阶段 3 新增**：
+**New in phase 3**:
 
-- [ ] 生成模块优先针对天然产物暗化学空间，参考 MS2Mol 的从头预测思路。
-- [ ] 使用 EnvedaDark 作为内部 Class 3 验证集。
-- [ ] 采用置信度门控：仅当检索候选不足时才允许生成候选进入高排名。
+- [ ] Aim the generative module at natural-product dark chemical space first, following MS2Mol's
+      de-novo approach.
+- [ ] Use EnvedaDark as the internal Class 3 validation set.
+- [ ] Apply confidence gating: allow generated candidates into high ranks only when the retrieval
+      candidates are insufficient.
+  > **Partly confirmed later**: the public V44 has no generative module; the engine does have a
+  > Class-3 generation channel with 6 dedicated features
+  > ([`PLAYBOOK.md`](PLAYBOOK.md) §17).
 
-### 2.6 第 6 章 技术栈：新增天然产物工具
+### 2.6 Section 6, technology stack: add natural-product tooling
 
-**补丁**：技术栈新增：
+**Patch**: add to the stack:
 
-| 工具 | 用途 |
+| Tool | Purpose |
 |---|---|
-| **COCONUT / LOTUS / NPAtlas** | 天然产物结构数据库，候选池补充 |
-| **MS2Mol** | 参考架构，从头预测天然代谢物 |
-| **EnvedaDark** | 暗化学空间天然产物基准，内部验证 |
-| **msbuddy / MIST** | 分子式预测，辅助天然产物候选过滤 |
+| **COCONUT / LOTUS / NPAtlas** | natural-product structure databases, supplementing the candidate pool |
+| **MS2Mol** | reference architecture for de-novo prediction of natural metabolites |
+| **EnvedaDark** | dark-chemical-space natural-product benchmark, for internal validation |
+| **msbuddy / MIST** | molecular-formula prediction, assisting natural-product candidate filtering |
 
+## 3. New experiment: DreaMS probe version 4
 
-## 三、新增实验：DreaMS 探针版本 4
+On top of the three originally planned versions, add:
 
-在原计划的三个版本基础上，新增：
+**Version 4**: reference datasets = COCONUT + LOTUS + NPAtlas (natural-product structure libraries)
 
-**版本 4**：参考数据集 = COCONUT + LOTUS + NPAtlas（天然产物结构库）
+- If version 4's coverage is **clearly higher than version 2 (Enveda-180)**, the test set is
+  confirmed to favour natural-product dark chemical space.
+- If version 4's coverage is comparable to version 2's, the test set may mix synthetic molecules
+  and natural products, requiring stratified handling.
+- If version 4's coverage is low, the hypothesis needs re-evaluation — the test set may still be
+  predominantly Enveda-180.
 
-- 如果版本 4 覆盖率**显著高于版本 2（Enveda-180）**，则确认测试集偏向天然产物暗化学空间。
-- 如果版本 4 覆盖率与版本 2 相当，则测试集可能混合了合成分子与天然产物，需分层处理。
-- 如果版本 4 覆盖率低，则需重新评估假设，可能测试集仍以 Enveda-180 为主。
+**Output**: coverage curves for each version at similarity thresholds 0.9 / 0.85 / 0.8 / 0.7, plus
+the nearest-neighbour source distribution of the test spectra.
 
-**输出**：各版本在相似度阈值 0.9 / 0.85 / 0.8 / 0.7 下的覆盖率曲线，以及测试集谱图最近邻来源分布。
+## 4. Updated instructions for the agent
 
-
-## 四、对 Agent 的更新指令
-
-1. **立即执行 DreaMS 探针实验版本 4**，与版本 1–3 对比，输出覆盖率报告。
-2. **下载 COCONUT、LOTUS、NPAtlas**，按分子式索引，构建 Layer C 候选池。
-3. **从训练集分离天然产物来源谱图**，构建 Layer B。
-4. **重排器训练数据加入来源分层**，负样本包含天然产物类似物。
-5. **验证集按来源分层报告 MRR@25**，重点关注天然产物子集。
-6. **生成模块优先针对暗化学空间**，参考 MS2Mol，使用 EnvedaDark 作为内部 Class 3 验证。
-7. **采用置信度门控**：生成候选仅在检索候选不足时进入高排名。
-8. **不要将 Enveda-180 合成分子与天然产物候选混合检索**，避免候选稀释。
+1. **Run DreaMS probe version 4 immediately**, compare against versions 1–3, and produce a coverage
+   report.
+2. **Download COCONUT, LOTUS, NPAtlas**, index by formula, and build the Layer C candidate pool.
+3. **Separate natural-product-source spectra from the training set** to build Layer B.
+4. **Add source stratification to the reranker's training data**, with negatives including
+   natural-product analogs.
+5. **Report MRR@25 stratified by source in validation**, focusing on the natural-product subset.
+6. **Aim the generative module at dark chemical space first**, following MS2Mol and using
+   EnvedaDark as the internal Class 3 validation.
+7. **Apply confidence gating**: generated candidates enter high ranks only when retrieval
+   candidates are insufficient.
+8. **Do not retrieve Enveda-180 synthetic molecules and natural-product candidates together**, to
+   avoid candidate dilution.
 
 ---
 
-**补丁总结**：本次补丁将 PRD 的目标从“通用小分子检索”修正为“**天然产物暗化学空间定向检索+生成**”。检索库分层、重排特征、验证策略、生成模块均需相应调整。Agent 应优先完成 DreaMS 探针版本 4 和天然产物数据库准备，再进入主引擎优化。
+**Patch summary**: this patch reframes the PRD's goal from "generic small-molecule retrieval" to
+"**natural-product dark-chemical-space-targeted retrieval + generation**". The tiered retrieval
+library, reranking features, validation strategy and generative module all need corresponding
+adjustment. The agent should prioritise DreaMS probe version 4 and natural-product database
+preparation before moving on to main-engine optimisation.
