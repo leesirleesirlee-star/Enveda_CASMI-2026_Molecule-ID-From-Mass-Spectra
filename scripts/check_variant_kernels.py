@@ -5,9 +5,49 @@ import os
 import sys
 
 ROOT = r"D:\CASMI竞赛"
+
+# A missing dataset_source costs a full ~5 h run before anyone notices, and it
+# fails at import time deep inside the pipeline. Check the metadata too.
+REQUIRED_DATASETS = {
+    "prvsiyan/casmi26-fp-models-v2",
+    "dmitriigluzdov/casmi26-pubchem-popularity-prior",
+    "prvsiyan/casmi26-ranker-features",
+    "megayak/casmi26-simulated-ranker-rows",
+    "ahmedberatozer/casmi26-fpnet-full1",
+    "ahmedberatozer/casmi26-glacier",
+    "ahmedberatozer/casmi26-iceberg",
+    "ahmedberatozer/casmi26-pubchem-tier",
+    "ahmedberatozer/casmi26-v2-pool",
+    "ahmedberatozer/casmi26-v3-models",
+    "ahmedberatozer/casmi26-v4b-models",
+    "prvsiyan/chebi-lipidmaps-casmi26",
+    "prvsiyan/coconut-casmi26-candidates",
+    "metric/rdkit-2026-3-3-wheel",
+}
+COMPETITION = "enveda-CASMI26-molecule-id-mass-spectra"
+
 bad = 0
 for nb in sorted(glob.glob(os.path.join(ROOT, "notebooks", "v45", "*", "notebook.ipynb"))):
     d = json.loads(open(nb, encoding="utf-8").read())
+    name = os.path.basename(os.path.dirname(nb))
+
+    meta_path = os.path.join(os.path.dirname(nb), "kernel-metadata.json")
+    meta = json.loads(open(meta_path, encoding="utf-8").read())
+    ds = set(meta.get("dataset_sources") or [])
+    problems = []
+    if REQUIRED_DATASETS - ds:
+        problems.append(f"missing datasets {sorted(REQUIRED_DATASETS - ds)}")
+    if ds - REQUIRED_DATASETS:
+        problems.append(f"unexpected datasets {sorted(ds - REQUIRED_DATASETS)}")
+    if not meta.get("enable_gpu"):
+        problems.append("enable_gpu is false")
+    if (meta.get("competition_sources") or []) != [COMPETITION]:
+        problems.append(f"competition_sources={meta.get('competition_sources')}")
+    if problems:
+        bad += 1
+        print(f"FAIL {name}: " + "; ".join(problems))
+        continue
+
     errs = []
     for i, c in enumerate(d["cells"]):
         if c.get("cell_type") != "code":
