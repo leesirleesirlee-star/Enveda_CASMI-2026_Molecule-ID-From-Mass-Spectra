@@ -1,7 +1,7 @@
 """
 Test the suggest's central claim on real data before rebuilding anything.
 
-Claim under test (from docs/suggest_for_ChatGPT.md §1A, attributed to a public
+Claim under test (from docs/architecture_review.md §1A, attributed to a public
 "Lessons from ~30 submissions" discussion):
     when the correct molecule is in the candidate list but loses rank, the wrong
     winner has the SAME molecular formula ~98% of the time.

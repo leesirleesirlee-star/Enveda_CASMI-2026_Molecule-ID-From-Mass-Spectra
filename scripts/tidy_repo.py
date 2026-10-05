@@ -22,14 +22,14 @@ ROOT = r"D:\CASMI竞赛"
 MOVES = [
     ("CASMI竞赛详细说明.md", "docs/competition_brief.md"),
     ("inpiration_1.md", "docs/inspiration_1.md"),          # also fixes the typo
-    ("suggest_for_ChatGPT.md", "docs/suggest_for_ChatGPT.md"),
+    ("architecture_review.md", "docs/architecture_review.md"),
     ("prd patch.md", "docs/prd_patch.md"),
     ("CASMI_2026_PRD_v2.1.docx.docx", "docs/CASMI_2026_PRD_v2.1.docx"),  # double extension
 ]
 
 # prose references that would otherwise point at a path that no longer exists
 REFS = [
-    ("scripts/verify_formula_claim.py", "suggest_for_ChatGPT.md", "docs/suggest_for_ChatGPT.md"),
+    ("scripts/verify_formula_claim.py", "architecture_review.md", "docs/architecture_review.md"),
     ("scripts/build_candidate_pool.py", "PRD patch §2.1", "docs/prd_patch.md §2.1"),
     ("scripts/build_notebook.py", "PRD patch:", "docs/prd_patch.md:"),
 ]

@@ -43,12 +43,16 @@ env/
 .ipynb_checkpoints/
 numba_cache/
 
-# === 第三方工具（vendored，按需重装）===
-.opencode/ponytail/
-.opencode/node_modules/
 
 # === 编辑器/系统 ===
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
+# === AI agent tooling (local only, never published) ===
+# The project rules, the agent config and its skill tree stay on disk so the
+# workflow keeps working here, but they are not part of the public repository.
+AGENTS.md
+opencode.jsonc
+.opencode/

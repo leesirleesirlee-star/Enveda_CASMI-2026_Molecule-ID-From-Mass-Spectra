@@ -586,7 +586,7 @@ NP-exclusive structures (in an NP library but not train): **454,351 (100% absent
 
 ---
 
-# 2026-10-04 · Architectural diagnosis rebuilt (from `suggest_for_ChatGPT.md`)
+# 2026-10-04 · Architectural diagnosis rebuilt (from `architecture_review.md`)
 
 ## Today's submissions
 

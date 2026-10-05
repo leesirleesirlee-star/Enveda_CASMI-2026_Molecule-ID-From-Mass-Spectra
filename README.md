@@ -34,6 +34,38 @@ line therefore requires something the public implementations do not do.
 
 ---
 
+## How this project was built
+
+**This is an AI-assisted project, and we would rather say so than have you infer it.** A large
+share of the work here was done by an AI agent operating inside this repository, with a human
+setting direction and making the calls.
+
+Roughly: the **human** chose what to pursue and what to abandon, supplied the domain reading of the
+task and the competition's constraints, wrote the original design inputs
+([`prd_patch.md`](docs/prd_patch.md), [`inspiration_1.md`](docs/inspiration_1.md)), and reviewed
+every conclusion. The **agent** read the public notebooks and the engine's source, wrote and
+reorganised the scripts, designed the experiments and pre-registered their predictions, ran the
+tooling, and drafted the documentation.
+
+Two consequences you will notice, both deliberate:
+
+- **The docs record mistakes, not just results.** [`CHANGELOG.md`](CHANGELOG.md) carries a table of
+  ten conclusions that were *refuted*, and [`PLAYBOOK.md`](docs/PLAYBOOK.md) keeps corrections
+  inline where the wrong claim was made. Some of those errors were the agent's
+  (three silent failures in a row, a mis-computed resolution, a metric arithmetic slip); keeping
+  them was a choice, because a record that only shows what worked cannot be audited.
+- **Claims carry their evidence.** Every measured number names the script that produced it, and
+  where a conclusion rests on an inference rather than a measurement, it says so.
+
+The agent's own configuration and rule files are intentionally **not** part of this repository.
+
+What we would ask you to check independently: the two headline claims — that the visible
+`test.parquet` is a decoy, and that 0.417 decomposes into recall × ranking. Both are reproduced by
+scripts in [`scripts/`](scripts/), and both can be re-derived from the public data without taking
+our word for it.
+
+---
+
 ## Four things you need to know before reading the code
 
 1. **The visible `test.parquet` is a decoy, not the evaluation set.**
