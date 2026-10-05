@@ -1,5 +1,5 @@
 """
-Build the merged natural-product candidate pool (PRD patch §2.1 Layer C).
+Build the merged natural-product candidate pool (docs/prd_patch.md §2.1 Layer C).
 
 The patch's core correction: the hidden test is natural-product dark chemical
 space, and the answer is only reachable if it is IN the candidate pool. My

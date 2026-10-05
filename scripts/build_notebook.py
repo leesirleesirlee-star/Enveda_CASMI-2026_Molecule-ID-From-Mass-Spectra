@@ -134,7 +134,7 @@ def _resolve_lib_dir(pool_dir):
 
 ASSET_DIR = _resolve_asset_dir()
 # Candidate pool = train structures + COCONUT 2.0 + LOTUS + NPAtlas (see the
-# PRD patch: the hidden test is natural-product dark chemical space, and a
+# docs/prd_patch.md: the hidden test is natural-product dark chemical space, and a
 # train-only pool left 8.6% of NP query masses with ZERO candidates in window
 # and a median of only 15). Fall back to the train-only table if the merged pool
 # is not attached.
