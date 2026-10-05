@@ -1135,3 +1135,23 @@ the degraded state is *observable*, and here it was observable only in a log fie
 It also vindicates the fidelity check that the runbook listed as "item 0, do this once": it was the
 only thing in the pipeline that compared our output against a known-good one, and it caught a defect
 every internal consistency check was blind to.
+
+## Two operational facts from this sequence
+
+**1. Killing a queue job does not necessarily prevent its push.** I halted the queued `claw` job to
+stop it running against the broken environment. It turned out the job had pushed `claw` in the
+instant before the kill (lastRun 15:39), so a claw run started anyway — on the *unpinned* metadata,
+with ICE/GL dead. That run was written off (~2–3 GPU hours) and its result will not be submitted.
+
+The lesson is about the granularity of a kill, not about `claw`: the queue's state machine has a
+point of no return (the push), and stopping the process does not undo work already past it. Had I
+wanted a hard guarantee I would have needed to check for a new kernel version *after* the kill.
+
+**2. The documented runtime is an underestimate when two sessions run concurrently.**
+The reference log gives **7,370 s (2 h 03 m)** for this pipeline. Our ablation kernel, running two
+versions at once on one account, took **13:42 → ~17:00 ≈ 3 h 18 m** — 60% longer. Two concurrent
+sessions share the same account's compute, so "2 h per run" is a single-session figure.
+
+That matters for scheduling: the plan of "push two variants in parallel to save wall-clock" does not
+save as much as it looks, and each concurrent run is individually slower. Quota-wise it is still two
+session-hours per hour, but the completion time of *both* moves out.
