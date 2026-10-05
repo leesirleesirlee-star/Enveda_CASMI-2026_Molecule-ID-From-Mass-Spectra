@@ -110,6 +110,11 @@ def main():
     ap.add_argument("--file", default="submission.csv")
     ap.add_argument("--timeout-h", type=float, default=8.0)
     ap.add_argument("--poll-s", type=int, default=180)
+    ap.add_argument("--session-timeout-s", type=int, default=14400,
+                    help="cap the run at N seconds. Kaggle reserves the session's "
+                         "maximum duration against the 30 h/week GPU allowance, so an "
+                         "unbounded push reserves ~5.8 h and throttles how many variants "
+                         "can be queued at once. 14400 s = 4 h covers every variant we run.")
     a = ap.parse_args()
     deadline = time.time() + a.timeout_h * 3600
 
@@ -124,8 +129,8 @@ def main():
     from kaggle.api.kaggle_api_extended import KaggleApi
     kapi = KaggleApi()
     kapi.authenticate()
-    log(f"pushing {a.folder}")
-    resp = kapi.kernels_push(a.folder)
+    log(f"pushing {a.folder} (session cap {a.session_timeout_s}s)")
+    resp = kapi.kernels_push(a.folder, timeout=a.session_timeout_s)
     if resp is None or getattr(resp, "error", None):
         log(f"ABORT: push failed: {getattr(resp, 'error', 'no response')}")
         raise SystemExit(3)
