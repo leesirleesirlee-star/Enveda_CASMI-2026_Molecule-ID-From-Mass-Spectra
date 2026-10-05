@@ -37,18 +37,20 @@ URL_SUBMIT = ("https://api.kaggle.com/v1/competitions.CompetitionApiService/"
               "CreateCodeSubmission")
 
 
-def api(url, payload=None, method="GET"):
+def api(url, payload=None, method="GET", raw=False):
     req = urllib.request.Request(
         url, method=method,
         headers={"Authorization": "Bearer " + TOK, "Content-Type": "application/json"},
         data=json.dumps(payload).encode() if payload is not None else None)
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return r.status, r.read().decode(errors="replace")
+        with urllib.request.urlopen(req, timeout=180) as r:
+            body = r.read()
+            return r.status, body if raw else body.decode(errors="replace")
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors="replace")
+        body = e.read()
+        return e.code, body if raw else body.decode(errors="replace")
     except Exception as e:
-        return "ERR", f"{type(e).__name__}: {e}"
+        return "ERR", b"" if raw else f"{type(e).__name__}: {e}"
 
 
 def log(msg):
@@ -117,10 +119,21 @@ def main():
         raise SystemExit(4)
 
     files = output_files(owner, slug)
-    log(f"output files: {files[:12]}{' ...' if len(files) > 12 else ''}")
-    if a.file not in files:
-        log(f"ABORT: {a.file} not in kernel output, refusing to submit")
-        raise SystemExit(5)
+    log(f"output files: {len(files)} listed, first: {files[:6]}{' ...' if len(files) > 6 else ''}")
+    # Guard by *fetching* the file, not by looking for it in the listing: the listing is
+    # capped (~500 entries) and a successful ICEBERG install writes thousands of package files
+    # into /kaggle/working, which pushes submission.csv past the cap. Checking the listing then
+    # refuses a perfectly valid submission -- observed on the pinned ctl run, whose submission.csv
+    # downloaded fine (393,910 bytes) while the listing stopped at ice_site/*.
+    if a.file in files:
+        log(f"found {a.file} in the output listing")
+    else:
+        st, body = api(f"https://www.kaggle.com/api/v1/kernels/output/download/"
+                       f"{owner}/{slug}/{a.file}", raw=True)
+        if st != 200 or not body:
+            log(f"ABORT: {a.file} is neither listed nor downloadable (HTTP {st}), refusing to submit")
+            raise SystemExit(5)
+        log(f"{a.file} is not in the (capped) listing but downloads: {len(body):,} bytes")
 
     payload = {"fileName": a.file, "competitionName": COMP,
                "kernelOwner": owner, "kernelSlug": slug,

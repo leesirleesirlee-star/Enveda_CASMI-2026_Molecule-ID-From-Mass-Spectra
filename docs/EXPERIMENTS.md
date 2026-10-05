@@ -1176,3 +1176,76 @@ sessions share the same account's compute, so "2 h per run" is a single-session 
 That matters for scheduling: the plan of "push two variants in parallel to save wall-clock" does not
 save as much as it looks, and each concurrent run is individually slower. Quota-wise it is still two
 session-hours per hour, but the completion time of *both* moves out.
+
+---
+
+# 2026-10-05 (fifth segment) · ✅ The pin worked — and the gate criterion was wrong, not the run
+
+## The pinned verification run
+
+`casmi26-v45-ctl` (version 1, docker image pinned to the reference's) completed in ~7,366 s and
+its log shows the forward models alive. Against the same run without the pin:
+
+| | reference | unpinned | **pinned** |
+|---|---|---|---|
+| ICE `rdkit` | 2025.03.6 | — (install failed) | **2025.03.6** |
+| ICE `device` / `n_pred` | cuda | — | **cuda / 10,721** |
+| ICE molecules scored | 71 | **0** | **71** |
+| GL status / scored | ok / 366 | **error / 0** | **ok / 366** |
+| `ICE reordered` | **365** | **0** | **365** |
+| `top-1 changed in` | **6** | 0 | **6** |
+| locks applied | 1 | 1 | 1 |
+
+**Fidelity against the reference output** (the check introduced in the fourth segment):
+
+| | unpinned | pinned |
+|---|---:|---:|
+| bytes | 393,418 | **393,910** (reference 393,908) |
+| **top-1 identical** | 393/400 (98.2%) | **400/400 (100%)** |
+| rows differing | **365** | **4** |
+
+The 4 remaining rows differ in tail ordering only; top-1 matches on every molecule. The environment
+is repaired and the pipeline reproduces the reference implementation.
+
+## ⚠️ The gate said FAIL, and the gate was wrong
+
+`ICE meta` returns `"status": "budget"` when ICE stops after covering part of the set within
+`ICE_BUDGET` seconds. **That is the healthy, expected state** — the reference reports the same
+coverage (71 of 400 molecules, 365 rows reordered). My acceptance test demanded `status == "ok"`,
+so it rejected a working run and the gated chain declined to submit it.
+
+The corrected criterion is `status in ("ok", "budget")` **and** `ICE rerank molecules > 0`. Both
+halves are needed: `molecules > 0` is what actually distinguishes "the forward model ran" from "the
+wheel failed to install" — it was `0` in exactly the broken case.
+
+`scripts/check_gate.py` now holds six cases, including the real logs from both the broken and the
+pinned run, so this specific mis-judgement cannot recur silently.
+
+**The lesson generalises past this bug.** My acceptance test encoded an assumption about what a
+healthy run *looks like* rather than what it *does*. The do-side (`reranked > 0`) was right; the
+look-side (`status == "ok"`) was a guess — and the guess is what blocked a correct result. A gate
+should test the effect, not the label.
+
+## Submissions
+
+| ref | what | status |
+|---|---|---|
+| **56854098** | **V45 `ctl`** — exact V44 control on the repaired environment | submitted 22:07, awaiting score |
+
+This is the anchor submission: the same code as the author's 0.417 run, so its score tests whether
+*our* environment and push chain reproduce a known result. Without it no variant delta can be
+interpreted — a `claw` score would be a number with nothing to compare it against.
+
+Its `submission.csv` (393,910 bytes) does not appear in the kernel's output listing: a successful
+ICEBERG install writes thousands of package files into `/kaggle/working`, pushing the listing past
+its ~500-entry cap. `wait_submit_report.py` refused to submit for that reason until its guard was
+changed to probe by *fetching* the file instead of looking for it in the listing — the same
+"check the effect, not the label" correction as the gate.
+
+**V-A / V-C for this line of work:** not applicable and not recorded as if they were. Those folds
+measure this project's own pipeline (`baseline_v1.py`: mass-window retrieval + direct spectral
+match); the V44 lineage is a different implementation and its folds were never the gate for it.
+What the goal statement asks for is satisfied where it applies — see the V_A_hard correction in the
+2026-10-03 section (MRR@25 0.0476 on the only non-inflated local fold) — and for the V44 lineage the
+substitute evidence is the fidelity check plus the Kaggle score itself, which the ledger records
+above and below.
