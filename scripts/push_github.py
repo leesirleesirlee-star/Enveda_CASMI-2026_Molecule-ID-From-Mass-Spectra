@@ -79,19 +79,22 @@ def read_token():
     return tok
 
 
-def api(path, token):
-    req = urllib.request.Request(f"https://api.github.com{path}", headers={
+def api(path, token, method="GET", payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(f"https://api.github.com{path}", data=data, method=method,
+                                 headers={
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "User-Agent": "casmi-publish",
+        **({"Content-Type": "application/json"} if data else {}),
     })
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
+            return r.status, dict(r.headers), json.loads(r.read() or b"null")
     except urllib.error.HTTPError as e:
-        return {"_http_error": e.code, "_body": e.read().decode("utf-8", "replace")[:200]}
+        return e.code, dict(e.headers), e.read().decode("utf-8", "replace")[:300]
     except Exception as e:
-        return {"_error": f"{type(e).__name__}: {e}"}
+        return 0, {}, f"{type(e).__name__}: {e}"
 
 
 def main():
@@ -105,20 +108,36 @@ def main():
           f"({len(tok)} chars, prefix {tok[:11]!r}) — not printed")
 
     # --- token identity and repo write permission -----------------------------
-    me = api("/user", tok)
-    if "login" not in me:
-        raise SystemExit(f"token rejected by the API: {me}")
+    _st, _h, me = api("/user", tok)
+    if not isinstance(me, dict) or "login" not in me:
+        raise SystemExit(f"token rejected by the API: HTTP {_st} {str(me)[:120]}")
     print(f"authenticated  : {me['login']}")
 
-    repo = api(f"/repos/{OWNER}/{REPO}", tok)
+    _st, _h, repo = api(f"/repos/{OWNER}/{REPO}", tok)
+    if not isinstance(repo, dict) or "full_name" not in repo:
+        raise SystemExit(f"cannot read the repository: HTTP {_st} {str(repo)[:120]}")
     perms = (repo.get("permissions") or {})
     print(f"repository     : {repo.get('full_name')}  private={repo.get('private')}  "
-          f"default_branch={repo.get('default_branch')}  push={perms.get('push')}")
-    if not perms.get("push"):
+          f"default_branch={repo.get('default_branch')}  role_push={perms.get('push')}")
+
+    # The role_push field above reports the USER's role on the repository, NOT what this
+    # token may do -- a fine-grained token can read a public repo while being unable to
+    # write it. Prove write access instead: POST a dangling blob. That needs
+    # Contents: read and write, creates no commit and no ref, and is garbage-collected.
+    st, _h, body = api(f"/repos/{OWNER}/{REPO}/git/blobs", tok, method="POST",
+                       payload={"content": "write-permission probe", "encoding": "utf-8"})
+    if st == 201:
+        print("write access   : confirmed (a test blob was accepted and discarded)")
+    elif st in (403, 404):
         raise SystemExit(
-            "The token authenticated but cannot push to this repository. For a fine-grained "
-            "token, set Repository permissions -> Contents -> Read and write."
+            "This token can read the repository but not write to it.\n"
+            "Fix it at https://github.com/settings/personal-access-tokens -> open this token ->\n"
+            "  Repository permissions -> Contents -> change to 'Read and write' -> Save.\n"
+            "The same token then works; there is no need to regenerate it.\n"
+            f"(GitHub said: {body})"
         )
+    else:
+        print(f"write probe    : inconclusive (HTTP {st}) — continuing anyway")
 
     # --- remote and the two network settings git needs ------------------------
     rc, out, _ = git("remote")
