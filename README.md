@@ -223,6 +223,14 @@ These rules are not ceremony — each one corresponds to a real mistake made her
 
 ---
 
+## Licence
+
+The **code** here is MIT-licensed — see [LICENSE](LICENSE).
+
+**Data**: the competition data and anything derived from it stay under the competition's terms
+(**CC BY-NC 4.0**, non-commercial), and every bundled or referenced third-party model and library
+keeps its own licence, itemised in [docs/EXTERNAL_RESOURCES.md](docs/EXTERNAL_RESOURCES.md).
+
 ## Data and compliance
 
 - Competition data: `enveda-CASMI26-molecule-id-mass-spectra` (Kaggle, competition rules apply)
