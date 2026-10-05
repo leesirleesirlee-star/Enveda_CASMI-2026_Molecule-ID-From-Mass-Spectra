@@ -52,10 +52,3 @@ numba_cache/
 .idea/
 .DS_Store
 Thumbs.db
-
-# === 无法删除的原件（Windows 权限拒绝写入）===
-# Their contents were copied to docs/competition_brief.md and
-# docs/CASMI_2026_PRD_v2.1.docx; these on-disk originals cannot be renamed or
-# deleted from this session (access denied, not a process lock).
-CASMI竞赛详细说明.md
-CASMI_2026_PRD_v2.1.docx.docx
