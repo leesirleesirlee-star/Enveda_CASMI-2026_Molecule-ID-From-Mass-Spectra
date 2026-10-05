@@ -93,27 +93,57 @@ def reachable(opener, timeout=15):
         return False
 
 
-def pick_route():
-    """Choose direct or proxied access, by measurement rather than assumption.
+def git_reachable(proxy):
+    """Can git actually reach github.com with this proxy setting?
 
-    History matters here: GitHub was for a while reachable ONLY through the local proxy, so
-    the proxy was hardcoded. It later started failing with `SSL: UNEXPECTED_EOF_WHILE_READING`
-    while DIRECT access began working -- a hardcoded route then turns a working setup into an
-    outage. So probe both and take whichever answers.
+    github.com and api.github.com are different hosts and can need different routes -- measured
+    on this machine: api.github.com answers DIRECT while github.com times out, and git only works
+    through the proxy. Choosing git's route from the API's probe is therefore wrong, and it made
+    four pushes fail with `Connection was reset`. So run the command that has to work.
+    """
+    env = {"GIT_CONFIG_COUNT": "2",
+           "GIT_CONFIG_KEY_0": "http.proxy",
+           "GIT_CONFIG_VALUE_0": proxy or "",
+           "GIT_CONFIG_KEY_1": "https.proxy",
+           "GIT_CONFIG_VALUE_1": proxy or ""}
+    rc, _out, _err = git("ls-remote", "--heads", "origin", env=env)
+    return rc == 0
+
+
+def pick_route():
+    """Choose the API route and the git route separately, by measurement rather than assumption.
+
+    History matters: GitHub was for a while reachable ONLY through the local proxy, so the proxy
+    was hardcoded. It later began failing with `SSL: UNEXPECTED_EOF_WHILE_READING` while DIRECT
+    access worked -- a hardcoded route then turns a working setup into an outage. Probing both
+    fixes that, but probing only the API is not enough either, because git uses github.com.
     """
     direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     if reachable(direct):
-        print("route          : direct (no proxy)")
-        return direct, None
-    proxied = urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
-    if reachable(proxied):
-        print(f"route          : via proxy {PROXY}")
-        return proxied, PROXY
-    raise SystemExit(
-        "api.github.com is unreachable both directly and via " + PROXY +
-        ".\n  direct: connection failed\n  proxy : connection failed\n"
-        "Check network/VPN, then retry.")
+        print("api route      : direct (no proxy)")
+        api_opener = direct
+    else:
+        proxied = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+        if not reachable(proxied):
+            raise SystemExit(
+                "api.github.com is unreachable both directly and via " + PROXY +
+                ".\n  direct: connection failed\n  proxy : connection failed\n"
+                "Check network/VPN, then retry.")
+        print(f"api route      : via proxy {PROXY}")
+        api_opener = proxied
+
+    git_proxy = None
+    for candidate in (None, PROXY):
+        if git_reachable(candidate):
+            git_proxy = candidate
+            break
+    else:
+        raise SystemExit(
+            "git cannot reach github.com directly or via " + PROXY + ".\n"
+            "Note api.github.com may still be reachable: they are different hosts.")
+    print(f"git route      : {'via proxy ' + PROXY if git_proxy else 'direct (no proxy)'}")
+    return api_opener, git_proxy
 
 
 OPENER = None  # set by main()
