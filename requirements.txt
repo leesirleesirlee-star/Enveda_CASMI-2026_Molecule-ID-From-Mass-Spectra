@@ -1,0 +1,17 @@
+# Local tooling dependencies.
+#
+# Validated on Python 3.11.16 with: numpy 2.2.6, pandas 3.0.6, pyarrow 25.0.1,
+# rdkit 2026.3.6, lightgbm 4.7.0, kaggle 2.2.4 (all satisfy the floors below).
+#
+# These are what scripts/ and src/ actually import (collected by parsing the ASTs,
+# not guessed). The Kaggle-side stack is a different story and is NOT listed here:
+# the notebooks install their own wheels (see the rdkit wheel dataset) and pull
+# torch / numba / lightgbm from the competition image. Reproducing a submission
+# end to end requires Kaggle, not a local pip install.
+
+numpy>=1.26
+pandas>=2.1
+pyarrow>=15.0
+rdkit>=2024.3
+lightgbm>=4.3
+kaggle>=1.6
