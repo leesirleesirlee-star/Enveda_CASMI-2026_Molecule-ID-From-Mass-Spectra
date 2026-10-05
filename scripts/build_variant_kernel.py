@@ -185,6 +185,15 @@ FORCE_EDITS = [(17, FORCE_ICE_PC[0], FORCE_ICE_PC[1]),
 VARIANTS["merge_force"] = FORCE_EDITS
 VARIANTS["claw_force"] = CLAW_EDITS + FORCE_EDITS
 
+# --- RRF weight: the only way the engine's rank-1 can ever win -----------------
+# In cell 21 fuse2 gives the v4 list 1/(KRR+r) and the engine ALPHA/(KRR+r), then
+# `sorted(sc, key=lambda k: -sc[k])`. At ALPHA=0.6 the v4 rank-1 scores 0.25 and
+# the engine rank-1 scores 0.15, and because the sort is stable a tie still favours
+# v4 (inserted first). So the engine's top-1 can only ever win for ALPHA > 1.0 -
+# which is why v28's 0.6 -> 0.65 tweak tests nothing.
+FUSE_LINE = "ALPHA, KRR = 0.6, 3.0"
+VARIANTS["alpha12"] = [(21, FUSE_LINE, "ALPHA, KRR = 1.2, 3.0  # V45: engine rank-1 can outrank v4's")]
+
 
 def apply(nb: dict, variant: str) -> dict:
     edits = VARIANTS[variant]
