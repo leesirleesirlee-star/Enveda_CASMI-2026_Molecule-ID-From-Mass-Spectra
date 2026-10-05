@@ -259,6 +259,27 @@ after scanning 2,539,608 train rows:
 | V_A_hard | 250 | pending | | | | ✅ answers removed from library (250→0) |
 | V_B | 233,483 | unsampled | | | | retrieval ceiling |
 
+> **Correction (added 2026-10-05).** The `V_A_hard` row above says *pending*, but the run was
+> completed and its result was never written back into this table. `data/processed/baseline_VAhard_fixed.json`
+> holds it: **MRR@25 0.0476, top-1 0.044, hit@25 0.056, recall@25 0.056, n=250, 933 s.** The
+> `_fixed` suffix marks the corrected fold — the earlier `baseline_VAhard.json` scored 1.0000
+> because `build_folds`' "first source" bug (see the bug table above) left the answers in.
+>
+> This is the **only local fold whose number is not inflated**, and it is the least flattering:
+> when the query's own structure is removed from the library, the pipeline returns it within the
+> top 25 about **one time in eighteen**. Comparison against the same run with answers present
+> (1.0000) isolates the cause: the candidate set is not the problem — oracle recall on V_A is
+> 0.988 — so this is a **ranking/evidence failure**, i.e. the direct-match and analog channels
+> contribute almost nothing when the molecule is genuinely novel.
+>
+> Two consequences worth stating plainly:
+> - The earlier claim "recall is not the bottleneck, so the difficulty is whether the hidden
+>   test's molecules exist in the pool at all" is only half right. Pool membership was never the
+>   binding constraint on this fold; **evidence quality on novel molecules is**.
+> - 0.048 is a *floor*, not a forecast. The hidden test presumably retains some near neighbours
+>   where V_A_hard deliberately retains none, which is consistent with the leaderboard's 0.417
+>   sitting far above this and far below the inflated 0.98.
+
 ### Calibration conclusions (in force for all later experiments)
 - **Local folds are usable only for relative comparison** (A/B ablations, regression
   detection); they **do not predict the LB score**
