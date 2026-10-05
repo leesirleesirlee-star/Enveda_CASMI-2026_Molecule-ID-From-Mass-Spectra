@@ -265,6 +265,16 @@ Two smaller ones to confirm too:
 - **The sandbox blocks the GPU and some writes**: `torch.cuda.is_available()` is `False` in the
   restricted mode and `pip` unpacking fails. GPU commands, and writes into `.opencode/`, need
   elevated execution.
+- **⚠️ A Kaggle token was echoed into a shell error, and so into the conversation (2026-10-05).**
+  While probing for a kernel-cancel endpoint I duplicated an environment assignment
+  (`& $env:KAGGLE_API_TOKEN=(Get-Content ...)` twice on one line); PowerShell tried to execute the
+  token's value as a command and printed it in the error. The token never reached the repository
+  or any file — `.secrets/` is ignored and nothing was staged — but it is now plain text in the
+  session transcript. **Recommendation: revoke and regenerate it in Kaggle settings at the end of
+  the competition**, alongside the earlier token already noted here. The rule this violated is
+  "never print credentials"; the mechanism was a redundant assignment, so the durable form of the
+  lesson is that a command which reads a credential must be written once and not padded with
+  repeated assignments.
 
 ## Appendix: what this review actually did
 
