@@ -1,253 +1,297 @@
-# CASMI 2026 竞赛完整技术介绍文档
+# CASMI 2026 — full technical brief
 
-**文档版本**：1.0  
-**日期**：2026-10-03  
-**目标读者**：AI Agent / 项目执行团队  
-**用途**：供 Agent 理解竞赛全貌、提交流程、规则约束与技术背景，作为项目决策和执行的基础参考
+**Document version**: 1.0
+**Date**: 2026-10-03
+**Audience**: the project's execution team
+**Purpose**: to convey the competition's shape, submission flow, rule constraints and technical
+background as a basis for project decisions
 
+> Where our own measurements later differed from the figures quoted here (which came from the
+> competition description and forum posts), the measured value is noted in the margin. The text is
+> otherwise kept as written.
 
-## 1. 竞赛概述
+## 1. Competition overview
 
-### 1.1 基本信息
+### 1.1 Basics
 
-| 项目 | 内容 |
+| Item | Content |
 |---|---|
-| **竞赛名称** | Enveda CASMI 2026 - Molecule ID From Mass Spectra |
-| **平台** | Kaggle |
-| **竞赛类型** | Featured Code Competition（代码竞赛） |
-| **任务** | 根据 LC-MS/MS 串联质谱预测小分子的二维化学结构（SMILES） |
-| **主办方** | Enveda |
-| **总奖金** | $50,000 USD（第一名 $16,000） |
-| **开始日期** | 2026年9月14日 |
-| **报名/组队截止** | 2026年12月7日 23:59 UTC |
-| **最终提交截止** | 2026年12月14日 23:59 UTC |
-| **竞赛周期** | 90天 |
+| **Name** | Enveda CASMI 2026 — Molecule ID From Mass Spectra |
+| **Platform** | Kaggle |
+| **Type** | Featured Code Competition |
+| **Task** | predict a small molecule's 2-D chemical structure (SMILES) from LC-MS/MS spectra |
+| **Host** | Enveda |
+| **Prize pool** | $50,000 USD ($16,000 for first place) |
+| **Start** | 2026-09-14 |
+| **Registration / team merge deadline** | 2026-12-07 23:59 UTC |
+| **Final submission deadline** | 2026-12-14 23:59 UTC |
+| **Duration** | 90 days |
 
-### 1.2 竞赛背景与意义
+### 1.2 Background
 
-CASMI（Critical Assessment of Small Molecule Identification）是一个盲测挑战赛，创立于2012年，灵感来源于CASP（蛋白质结构预测竞赛，催生了AlphaFold）。CASMI 2026是自2022年以来的首次挑战赛，也是首次面向更广泛的机器学习社区设计。
+CASMI (Critical Assessment of Small Molecule Identification) is a blind challenge founded in 2012,
+inspired by CASP (the protein-structure prediction competition that produced AlphaFold). CASMI 2026
+is the first challenge since 2022 and the first designed for the broader machine-learning
+community.
 
-现代质谱技术可以检测复杂生物样本（如血液、植物提取物）中的数千种化学信号，但在典型的非靶向研究中，只有约 **10%** 的信号能匹配到已知分子，其余 **90%** 被测量和记录却从未被鉴定，导致大量生物学信息和潜在新药未被探索。
+Modern mass spectrometry can detect thousands of chemical signals in a complex biological sample
+(blood, plant extract), yet in a typical untargeted study only about **10%** of signals match a
+known molecule — the other **90%** are measured and recorded but never identified, leaving a large
+amount of biological information and potential new drugs unexplored.
 
-Enveda利用其药物发现平台生成了CASMI 2026测试集：约 **400个分子**，对应约 **2,500张质谱图**，**所有这些数据均未公开发表**。这些分子是真实或潜在的天然产物及其类似物。
+Enveda generated the CASMI 2026 test set with its drug-discovery platform: about **400 molecules**
+corresponding to about **2,500 spectra**, **none of which has been published**. These molecules are
+real or potential natural products and their analogs.
 
-### 1.3 任务定义
+> **Measured later**: the public `test.parquet` holds **1,213 spectra / 400 molecules**.
 
-**输入**：LC-MS/MS 二级质谱数据，包含碎片离子峰列表（m/z, intensity）以及前体离子信息。
+### 1.3 Task definition
 
-**输出**：每个 molecule_id 最多 25 个候选 SMILES 字符串，按置信度从高到低排列。
+**Input**: LC-MS/MS data — fragment peak lists (m/z, intensity) plus precursor ion information.
 
-**核心挑战**：测试集中的分子是**真正新颖的**，检索库中可能不存在正确答案，因此纯检索方法存在得分天花板。参赛者需要同时处理谱库检索、候选结构召回和从头结构预测。
+**Output**: up to 25 candidate SMILES strings per `molecule_id`, ordered by confidence.
 
-**预测单位**：预测单位是**分子**而非单张质谱。同一个分子可能在不同碰撞能量或不同加合离子条件下产生多张谱图，模型需要综合这些谱图后输出统一的候选列表。
+**Core challenge**: the test molecules are **genuinely novel**; the retrieval library may not
+contain the right answer, so pure retrieval has a score ceiling. Competitors must handle spectral
+library retrieval, candidate structure recall and de-novo structure prediction together.
 
+**Prediction unit**: the unit is the **molecule**, not a single spectrum. One molecule may produce
+several spectra at different collision energies or adducts, and the model must combine them into a
+single candidate list.
 
-## 2. 数据集
+## 2. Datasets
 
-### 2.1 官方数据文件
+### 2.1 Official files
 
-竞赛官方提供三个文件：
-
-| 文件 | 内容 |
+| File | Content |
 |---|---|
-| `train.parquet` | 训练集，约 **250万张** MS/MS质谱，对应约 **275,000个** 唯一分子结构 |
-| `test.parquet` | 测试集，约 **1,500张** 质谱，对应 **400个** 分子 |
-| `sample_submission.csv` | 提交格式模板 |
+| `train.parquet` | training set, about **2.5 million** MS/MS spectra covering about **275,000** unique structures |
+| `test.parquet` | test set, about **1,500** spectra covering **400** molecules |
+| `sample_submission.csv` | submission format template |
 
-### 2.2 训练集详情
+> **Measured later**: `train.parquet` is **2,539,608 rows / 275,810 structures**;
+> `test.parquet` is **1,213 spectra**.
 
-训练集数据来自多个公开质谱库的整合，包括 Enveda-180（Enveda近期发布的开源数据集，约 **116万张** 谱图，来自 **184,330个** 合成小分子）。每行表示一张质谱，包含质谱峰数据及对应的分子结构标签（如 normalized_smiles、inchikey14、molecular_formula）。
+### 2.2 Training set detail
 
-### 2.3 测试集详情
+The training set integrates several public spectral libraries, including Enveda-180 (Enveda's
+recently released open dataset, about **1.16 million** spectra from **184,330** synthetic small
+molecules). Each row is one spectrum, carrying peak data and the corresponding structure labels
+(`normalized_smiles`, `inchikey14`, `molecular_formula`).
 
-- 每个分子对应 **1至16张** 谱图，中位数为 **3张**
-- 所有测试谱图均由 **Bruker timsTOF** 仪器采集
-- 测试分子的单同位素质量约为 **157至1,159 Da**，中位数约为 **348 Da**
-- **重要提示**：有参赛者发现测试集中的谱图（enveda-180来源的行）与训练集数据**逐字节完全相同**，这意味着部分测试谱图在训练集中已有对应标签
+### 2.3 Test set detail
 
-### 2.4 外部数据规则
+- **1 to 16** spectra per molecule, median **3**
+- every test spectrum was acquired on a **Bruker timsTOF**
+- test molecule monoisotopic masses **157 to 1,159 Da**, median about **348 Da**
+- **Important**: competitors found that the test spectra (the enveda-180 rows) are **byte-for-byte
+  identical** to training-set data, meaning some test spectra already have labels in the training
+  set
 
-竞赛允许使用“公开且免费可得的外部数据，包括预训练模型”，但必须满足以下条件：
+### 2.4 External data rules
 
-1. **必须公开且免费可得**：数据或模型权重必须对所有参赛者免费开放
-2. **必须合规**：预训练模型权重的发布必须符合其训练数据集的许可证。竞赛主办方明确表示：“我们不能一概批准所有开放权重模型。只要开放权重模型的发布符合其训练数据的许可证，就应该没问题。”
-3. **必须声明**：获奖方案必须披露所有使用的外部模型和数据集，并确认其使用符合所有竞赛要求
-4. **训练数据的使用**：使用 `train.parquet` 训练的模型权重是允许的，无论是由团队自己训练还是使用其他参赛者公开的权重
+Publicly and freely available external data — including pretrained models — is allowed, subject to:
 
+1. **Public and free**: the data or weights must be freely available to all competitors
+2. **Compliant**: a pretrained model's release must comply with its training data's licence. The
+   hosts stated explicitly: "we cannot blanket-approve all open-weight models. As long as the
+   open-weight model's release is compliant with its training data licence, it should be fine."
+3. **Disclosed**: a winning solution must disclose every external model and dataset used and
+   confirm compliance
+4. **Training data**: weights trained on `train.parquet` are allowed, whether trained by your own
+   team or obtained from another competitor's public release
 
-## 3. 评估指标：MRR@25
+## 3. Metric: MRR@25
 
-### 3.1 指标定义
+### 3.1 Definition
 
-提交结果按 **Mean Reciprocal Rank @ 25（MRR@25）** 评估：
+Submissions are evaluated by **Mean Reciprocal Rank @ 25 (MRR@25)**:
 
 $$
 \text{MRR@25} = \frac{1}{U} \sum_{u=1}^{U} \frac{1}{\text{rank}_u}
 $$
 
-其中 $U$ 是分子总数，$\text{rank}_u$ 是第一个正确结构在候选列表中的位置。
+where $U$ is the number of molecules and $\text{rank}_u$ the position of the first correct
+structure in the candidate list.
 
-### 3.2 评分规则
+### 3.2 Scoring rules
 
-- 每个分子恰好有一个正确结构，**只有第一个正确猜测计入分数**
-- 正确猜测在第 **1** 位得 **1.0** 分
-- 在第 **2** 位得 **0.5** 分
-- 在第 **25** 位得 **0.04** 分
-- 前25个候选中无正确答案得 **0** 分
-- 最终成绩为所有分子得分的平均值
+- each molecule has exactly one correct structure, and **only the first correct guess counts**
+- a correct guess at position **1** scores **1.0**
+- at position **2**, **0.5**
+- at position **25**, **0.04**
+- no correct answer among the first 25 candidates scores **0**
+- the final score is the mean over all molecules
 
-### 3.3 匹配规则
+### 3.3 Matching rule
 
-预测正确的条件是：预测的SMILES与正确答案描述**相同的原子连接性**。两者均通过 **RDKit 2026.03.3** 的互变异构体规范化处理后，计算 **InChIKey 的第一块（InChIKey14）**，比较两者是否一致。
+A prediction is correct when the predicted SMILES describes **the same atom connectivity** as the
+answer. Both sides are canonicalised for tautomers with **RDKit 2026.03.3**, reduced to the **first
+block of the InChIKey (InChIKey14)**, and compared.
 
+## 4. Submission format
 
-## 4. 提交格式
+### 4.1 CSV requirements
 
-### 4.1 CSV格式要求
-
-提交文件为CSV格式，包含两列：
-
-| 列名 | 说明 |
+| Column | Description |
 |---|---|
-| `molecule_id` | 分子标识符 |
-| `smiles` | 候选SMILES字符串 |
+| `molecule_id` | molecule identifier |
+| `smiles` | candidate SMILES strings |
 
-### 4.2 SMILES排列规则
+### 4.2 Ordering rules
 
-- 多个候选SMILES使用**分号（`;`）** 连接
-- **最优候选必须排在最前面**
-- 每个分子最多 **25** 个候选
-- 每个分子可以提交少于25个候选，但不能超过25个
+- multiple candidate SMILES are joined with **semicolons (`;`)**
+- **the best candidate must come first**
+- at most **25** candidates per molecule
+- fewer than 25 is allowed; more is not
 
-### 4.3 示例
+### 4.3 Example
 
 ```
 molecule_id,smiles
 m_0014ef,CC1=CC(=O)C=CC1=O;OC(=O)c1ccccc1O;C1CCNCC1
 ```
 
-### 4.4 文件保存路径
-
-提交文件必须保存到 Kaggle Notebook 的以下路径：
+### 4.4 File location
 
 ```
 /kaggle/working/submission.csv
 ```
 
-### 4.5 无效SMILES处理
+### 4.5 Invalid SMILES
 
-有参赛者报告，用填充SMILES（filler SMILES）填充的提交得分为0.000。在评分器v13中，不可解析的猜测仅消耗一个排名位置，但建议**不要包含无效SMILES**，以免浪费候选槽位。
+Competitors reported that submissions padded with filler SMILES score 0.000. In grader v13 an
+unparseable guess still consumes a rank position, so **do not include invalid SMILES** — it wastes
+candidate slots.
 
+## 5. Code competition constraints
 
-## 5. 代码竞赛约束
+### 5.1 Runtime
 
-### 5.1 运行时限制
-
-| 环境 | 最大运行时长 |
+| Environment | Maximum runtime |
 |---|---|
-| CPU Notebook | **≤ 9 小时** |
-| GPU Notebook | **≤ 9 小时** |
+| CPU notebook | **≤ 9 hours** |
+| GPU notebook | **≤ 9 hours** |
 
-**注意**：有参赛者询问P100 GPU是否被接受，或仅限T4，主办方表示将向Kaggle确认。
+### 5.2 Code requirements
 
-### 5.2 代码要求
+- a **single-file, self-contained Python program**
+- **no** `pip install` or `conda install` of new packages
+- **no internet access**
+- no part of the code may be skipped; no unexecuted cells
 
-- 代码必须是**单文件、自包含的Python程序**
-- **禁止** `pip install` 或 `conda install` 安装新包
-- **禁止**联网（Internet access disabled）
-- 不能跳过代码的任何部分，不能有未执行的单元格
+### 5.3 Available packages
 
-### 5.3 可用包
+Preinstalled in the Kaggle environment: `pandas`, `numpy`, `torch`, `xgboost`, `scikit-learn`,
+`transformers`, `lightgbm`, `torch-geometric` and others.
 
-以下包在Kaggle环境中已预装：`pandas`、`numpy`、`torch`、`xgboost`、`scikit-learn`、`transformers`、`lightgbm`、`torch-geometric` 等。
+> **Measured later**: the image does **not** ship `rdkit`, so it must be packaged as a dataset and
+> installed offline ([`EXTERNAL_RESOURCES.md`](EXTERNAL_RESOURCES.md) section B).
 
-### 5.4 外部资产策略
+### 5.4 External assets
 
-所有模型权重和数据资产必须**预先上传为 Kaggle Dataset**，Notebook中只做推理。需上传的资产可能包括：
+Every model weight and data asset must be **uploaded as a Kaggle Dataset in advance**; the notebook
+only performs inference. Assets may include:
 
-- 预训练模型权重（如DreaMS约1.2GB）
-- 谱图嵌入向量库
-- 重排器模型文件
-- 预计算的候选池
+- pretrained weights (e.g. DreaMS, about 1.2 GB)
+- spectral embedding stores
+- reranker model files
+- precomputed candidate pools
 
-Kaggle Notebook磁盘空间约 **20GB**，需控制上传资产总大小。
+A Kaggle notebook's disk is about **20 GB**, so the total asset size must be controlled.
 
+## 6. Timeline
 
-## 6. 竞赛时间线
-
-| 事件 | 日期 |
+| Event | Date |
 |---|---|
-| 竞赛开始 | 2026年9月14日 |
-| 报名/组队合并截止 | 2026年12月7日 23:59 UTC |
-| 最终提交截止 | 2026年12月14日 23:59 UTC |
+| Start | 2026-09-14 |
+| Registration / team merge deadline | 2026-12-07 23:59 UTC |
+| Final submission deadline | 2026-12-14 23:59 UTC |
 
-所有截止时间均为当天23:59 UTC。
+## 7. Technical background
 
+### 7.1 MS/MS principles
 
-## 7. 关键技术背景
+MS/MS provides two kinds of core information for structure prediction:
 
-### 7.1 MS/MS质谱原理
+1. **Precursor ion mass (m/z)**: the instrument measures the precursor's mass-to-charge ratio
+   precisely, effectively constraining molecular mass and possible formula. For small molecules z
+   is usually ±1.
+2. **Fragment ion pattern**: the selected precursor is fragmented by collision with a neutral gas,
+   and the instrument records each fragment's m/z and intensity. The resulting intensity histogram
+   is the molecule's spectrum.
 
-MS/MS质谱为结构预测提供两类核心信息：
+**Key terms**:
+- **base peak**: the most intense fragment ion
+- **precursor peak**: the intact unfragmented ion's m/z; may or may not be present depending on the
+  degree of fragmentation
+- **adduct**: the charged species the molecule acquired, e.g. [M+H]⁺, [M+NH₄]⁺, [M-H]⁻
 
-1. **前体离子质量（m/z）** ：仪器高精度测量前体离子的质荷比，有效限制分子质量和可能的分子式。对于小分子，电荷（z）通常为+1或-1。
-2. **碎片离子模式**：前体离子被选择后，通过碰撞与中性气体碎裂，仪器记录每个碎片的m/z和强度。所有检测到的碎片强度直方图即为分子的质谱图。
+### 7.2 The state of the art
 
-**关键术语**：
-- **基峰（base peak）** ：强度最高的碎片离子
-- **前体峰（precursor peak）** ：完整未碎裂离子的m/z，可能存在也可能不存在，取决于碎裂程度
-- **加合物（adduct）** ：分子获得的带电离子类型，如 [M+H]⁺、[M+NH₄]⁺、[M-H]⁻
+The strongest public solutions' main engines are all **retrieval + reranking**, not end-to-end
+generation. Retrieval matches against a large spectral library; the reranker fuses multi-dimensional
+evidence (spectral similarity, fragment explanation, fingerprint similarity, …) to produce the
+final order.
 
-### 7.2 当前主流方法
+### 7.3 Suggested stack
 
-当前公开最强方案的主引擎均为**检索+重排**，而非端到端生成。检索式方法利用大规模谱库进行相似度匹配，重排器融合多维证据（谱图相似度、碎片解释度、分子指纹相似度等）进行最终排序。
-
-### 7.3 推荐技术栈
-
-| 组件 | 推荐方案 | 用途 |
+| Component | Suggestion | Purpose |
 |---|---|---|
-| 谱图嵌入 | DreaMS（1024维） | 将质谱映射到有化学意义的嵌入空间 |
-| GPU加速相似度 | SimMS（1000x加速） | 大规模检索库中的快速相似度计算 |
-| 碎片评分 | RDKit自实现纯Python方案 | 检查候选分子能否解释观测碎片峰 |
-| 重排器 | XGBoost / LightGBM | 融合多通道证据进行最终排序 |
-| 向量索引 | FAISS | 近似最近邻搜索 |
+| Spectral embedding | DreaMS (1024-d) | map spectra into a chemically meaningful embedding space |
+| GPU similarity | SimMS (1000× speedup) | fast similarity over a large retrieval library |
+| Fragment scoring | a pure-Python RDKit implementation | check whether a candidate explains the observed fragments |
+| Reranker | XGBoost / LightGBM | fuse multi-channel evidence into a final order |
+| Vector index | FAISS | approximate nearest-neighbour search |
 
+> **Measured later**: DreaMS and SimMS were both evaluated and **deliberately left out** of the main
+> line ([`EXPERIMENTS.md`](EXPERIMENTS.md), 2026-10-04).
 
-## 8. 竞赛规则要点
+## 8. Rule highlights
 
-### 8.1 数据使用
+### 8.1 Data use
 
-- 竞赛数据不得在参赛者官方Kaggle团队之外发布或共享
-- 使用 `train.parquet` 训练的模型权重是允许的
+- competition data may not be published or shared outside your official Kaggle team
+- weights trained on `train.parquet` are allowed
 
-### 8.2 获奖要求
+### 8.2 Winning requirements
 
-- 获奖方法将被**开源**
-- 测试集将成为该领域的**持久性基准**
+- the winning method will be **open-sourced**
+- the test set will become a **lasting benchmark** for the field
 
-### 8.3 合规检查清单
+### 8.3 Compliance checklist
 
-- [ ] 确认所有外部数据/模型均公开且免费可得
-- [ ] 确认预训练模型权重的发布符合其训练数据许可证
-- [ ] 记录所有使用的外部资源
-- [ ] 确认代码符合单文件、自包含要求
-- [ ] 确认Notebook运行时间 < 9小时
-- [ ] 确认提交格式与 `sample_submission.csv` 一致
-- [ ] 在Notebook中显式打印MRR@25
+- [ ] every external dataset/model is public and free
+- [ ] pretrained weights' release complies with their training data's licence
+- [ ] every external resource is recorded
+- [ ] the code is single-file and self-contained
+- [ ] the notebook runs in under 9 hours
+- [ ] the submission format matches `sample_submission.csv`
+- [ ] MRR@25 is printed explicitly inside the notebook
 
+> **Measured later**: a 30 h/week GPU quota, not the 9 h per run, is the binding constraint
+> ([`PLAYBOOK.md`](PLAYBOOK.md) §3).
 
-## 9. 给AI Agent的执行指令
+## 9. Execution instructions for the agent
 
-1. **理解任务核心**：这是一个“谱图→结构”的预测任务，评估指标是MRR@25。正确答案必须排进前25名才有分，排得越前分越高。
+1. **Understand the task**: it is a "spectrum → structure" prediction task evaluated by MRR@25. The
+   correct answer must land inside the top 25 to score; higher ranks score more.
 
-2. **遵守提交格式**：CSV文件，`molecule_id` 和 `smiles` 两列，多个SMILES用分号连接，最优候选排最前，最多25个，保存到 `/kaggle/working/submission.csv`。
+2. **Follow the submission format**: a CSV with `molecule_id` and `smiles`, candidates joined by
+   semicolons, best first, at most 25, written to `/kaggle/working/submission.csv`.
 
-3. **遵守代码约束**：单文件Python程序，禁止`pip install`，禁止联网，Notebook运行时间 < 9小时。
+3. **Follow the code constraints**: a single-file Python program, no `pip install`, no internet,
+   runtime under 9 hours.
 
-4. **外部资产策略**：所有模型权重和数据资产预先上传为Kaggle Dataset，Notebook中只做推理。
+4. **External asset strategy**: upload every weight and data asset as a Kaggle Dataset in advance
+   and only run inference in the notebook.
 
-5. **验证策略**：使用分子骨架不相交验证集，评估时从检索库动态移除正确答案，监控MRR@25、Top-1、Top-10召回、Top-25召回。
+5. **Validation strategy**: use scaffold-disjoint validation sets, dynamically remove the correct
+   answer from the retrieval library at evaluation time, and monitor MRR@25, top-1, top-10 recall
+   and top-25 recall.
 
-6. **外部数据合规**：使用任何外部数据/模型前，确认其公开可得且许可证合规；记录所有外部资源。
+6. **External data compliance**: before using any external data or model, confirm it is public and
+   licence-compliant, and record every external resource.
 
-7. **时间管理**：注意报名截止（12月7日）和提交截止（12月14日），提前测试完整推理流程。
+7. **Time management**: watch the registration deadline (12-07) and the submission deadline
+   (12-14), and test the full inference path well in advance.
