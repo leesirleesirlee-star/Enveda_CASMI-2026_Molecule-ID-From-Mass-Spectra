@@ -194,6 +194,19 @@ VARIANTS["claw_force"] = CLAW_EDITS + FORCE_EDITS
 FUSE_LINE = "ALPHA, KRR = 0.6, 3.0"
 VARIANTS["alpha12"] = [(21, FUSE_LINE, "ALPHA, KRR = 1.2, 3.0  # V45: engine rank-1 can outrank v4's")]
 
+# --- use the runtime headroom -------------------------------------------------
+# Every run of this stack uses ~2 h of the 9 h notebook limit, while the whole
+# public field scores 0.417 with the same *shape* of stack. If the 0.42-0.47 teams
+# differ mainly by how much forward-model scoring they do, the lever is depth:
+# give ICEBERG/GLACIER a far deeper candidate list and a budget that actually
+# covers it. topn120 is the mild version, this is the aggressive end.
+GL_LINE = ("GL_SCORES, gl_stats, GL_LAM, GL_BUDGET = {}, "
+           "dict(molecules=0, changed_vs_ice_top25=0, changed_vs_ice_top1=0), 1.0, 4000")
+VARIANTS["bigcompute"] = [
+    (3, ICE_LINE, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 200, 1.0, 5400, True"),
+    (17, GL_LINE, GL_LINE.replace(", 1.0, 4000", ", 1.0, 6000")),
+]
+
 
 def apply(nb: dict, variant: str) -> dict:
     edits = VARIANTS[variant]
