@@ -207,6 +207,24 @@ VARIANTS["bigcompute"] = [
     (17, GL_LINE, GL_LINE.replace(", 1.0, 4000", ", 1.0, 6000")),
 ]
 
+# --- recall expansion, tail-only ---------------------------------------------
+# The 819-group probe (docs/V45_消融手册.md 8.6) says ~45% of hidden molecules
+# never get the truth into the top-25 at all: the loss is half recall, and the
+# structure pool cannot be widened (LOTUS/NPAtlas add 373 structures). PubChem is
+# the only recall channel left, and today it may occupy just slots 2,4,6,8,10.
+#
+# Widening into the *head* risks demoting correct pool candidates, which is
+# exactly what the field's gate exists to prevent. So this variant fills only
+# slots 16-25: for the ~45% of molecules whose truth is absent those 10 slots are
+# all wrong anyway, so displacing them costs nothing, while a hit at rank ~20 is
+# worth +0.05 where the molecule currently scores 0.
+TAIL_SLOTS = (
+    "        slots = SLOTS_AGG if rel > REL_TH else SLOTS_GENTLE",
+    "        slots = list(range(16, 26))  # V45: tail-only PubChem recall expansion",
+)
+VARIANTS["pc_tail10"] = [(19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
+VARIANTS["claw_tail10"] = CLAW_EDITS + [(19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
+
 
 def apply(nb: dict, variant: str) -> dict:
     edits = VARIANTS[variant]
