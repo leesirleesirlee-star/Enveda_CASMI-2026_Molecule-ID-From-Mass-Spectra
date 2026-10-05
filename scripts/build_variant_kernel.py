@@ -301,6 +301,21 @@ VARIANTS["genbig"] = [(13, ENGINE_CFG[0], ENGINE_CFG[1])]
 VARIANTS["genbig_tail10"] = [(13, ENGINE_CFG[0], ENGINE_CFG[1]),
                              (19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
 
+# --- per-spectrum analog search -------------------------------------------------
+# EngineCfg.analog_query is 'merged' | 'each' and V44 leaves it at 'merged', i.e. the
+# whole molecule is represented by one merged spectrum for the library/analog search.
+# Test molecules carry 1-16 spectra at different collision energies; searching with
+# each of them separately keeps the CE-specific fragmentation that merging blurs.
+# No public notebook touches this either. Cost: the search runs once per spectrum
+# instead of once per molecule, so the channel phase roughly multiplies by the
+# spectra-per-molecule count (median 3).
+ANALOG_QUERY = (
+    "E = Engine(L, P, tfp, EngineCfg(generate=True), bank)",
+    "E = Engine(L, P, tfp, EngineCfg(generate=True, analog_query='each'), bank)  "
+    "# V45: per-spectrum analog search",
+)
+VARIANTS["analog_each"] = [(13, ANALOG_QUERY[0], ANALOG_QUERY[1])]
+
 
 def apply(nb: dict, variant: str) -> dict:
     edits = VARIANTS[variant]
