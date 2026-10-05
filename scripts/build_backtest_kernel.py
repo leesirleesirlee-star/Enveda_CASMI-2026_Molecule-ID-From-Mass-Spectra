@@ -1,4 +1,4 @@
-"""
+﻿"""
 Build the leak-free backtest kernel (Method A, component 3).
 
 Derived from notebooks/v44_base/notebook.ipynb with four changes:
@@ -28,7 +28,7 @@ import argparse
 import json
 import os
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = r"D:\CASMI绔炶禌"
 SRC = os.path.join(ROOT, "notebooks", "v44_base", "notebook.ipynb")
 COMP = "enveda-CASMI26-molecule-id-mass-spectra"
 DATASETS = [
@@ -191,7 +191,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", type=int, default=0)
     ap.add_argument("--regime", default="other")
-    ap.add_argument("--limit", type=int, default=400)
+    ap.add_argument("--limit", type=int, default=2000,
+                    help="query molecules. ~18 s/molecule end-to-end puts the 9 h ceiling near "
+                         "1,800; 2,000 is only reachable with ICE/GL off (Tier 1).")
     ap.add_argument("--slug", default="casmi26-v45-backtest")
     ap.add_argument("--out", default=os.path.join(ROOT, "notebooks", "backtest"))
     ap.add_argument("--degrade", default="none", choices=["none", "top1", "no_ice"],
