@@ -179,6 +179,12 @@ def main():
     ap.add_argument("--limit", type=int, default=400)
     ap.add_argument("--slug", default="casmi26-v45-backtest")
     ap.add_argument("--out", default=os.path.join(ROOT, "notebooks", "backtest"))
+    ap.add_argument("--degrade", default="none", choices=["none", "top1", "no_ice"],
+                    help="deliberately cripple the pipeline to calibrate the backtest "
+                         "(component 4). 'top1' keeps a single candidate, 'no_ice' zeroes "
+                         "the forward-model weights. Both MUST score below the baseline; "
+                         "if they do not, the backtest cannot rank configurations and "
+                         "method A is worthless.")
     a = ap.parse_args()
 
     nb = json.loads(open(SRC, encoding="utf-8").read())
@@ -203,7 +209,22 @@ def main():
     assert "_champion_top1" in "".join(cells[31]["source"]), "cell 31 is not the lock cell"
     setsrc(31, SCORER)
 
-    out = os.path.join(a.out, "bt")
+    # --- calibration cripples (component 4) ---------------------------------
+    if a.degrade == "top1":
+        s15 = "".join(cells[15]["source"])
+        old = "                    if len(smis) >= TOPN: break"
+        assert s15.count(old) == 1, "candidate cap line not found exactly once"
+        setsrc(15, s15.replace(old, "                    if len(smis) >= 1: break  # V45 CALIB"))
+        print("CALIB: candidate list capped at 1")
+    elif a.degrade == "no_ice":
+        s17 = "".join(cells[17]["source"])
+        old = "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 300, True"
+        s3 = "".join(cells[3]["source"])
+        assert s3.count(old) == 1, "ICE constant line not found exactly once"
+        setsrc(3, s3.replace(old, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 0.0, 0, False  # V45 CALIB"))
+        print("CALIB: ICE/GL weights zeroed (forward models off)")
+
+    out = os.path.join(a.out, "bt" if a.degrade == "none" else f"bt_{a.degrade}")
     os.makedirs(out, exist_ok=True)
     p = os.path.join(out, "notebook.ipynb")
     json.dump(nb, open(p, "w", encoding="utf-8"), ensure_ascii=False)
