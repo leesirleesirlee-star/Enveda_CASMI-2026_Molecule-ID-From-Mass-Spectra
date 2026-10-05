@@ -101,6 +101,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check-only", action="store_true")
     ap.add_argument("--branch", default="main")
+    ap.add_argument("--force", action="store_true",
+                    help="force-with-lease: for amended commits (rewritten history)")
     a = ap.parse_args()
 
     tok = read_token()
@@ -175,7 +177,8 @@ def main():
         "GIT_CONFIG_VALUE_0": f"Authorization: Basic {b64}",
     }
     print(f"\npushing        : {a.branch} -> origin")
-    rc, out, err = git("push", "origin", f"{a.branch}:{a.branch}", env=env)
+    push_args = ["push"] + (["--force-with-lease"] if a.force else []) + ["origin", f"{a.branch}:{a.branch}"]
+    rc, out, err = git(*push_args, env=env)
     for line in (err or out).splitlines():
         if line.strip():
             # defensively make sure a token can never be echoed back
