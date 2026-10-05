@@ -279,6 +279,28 @@ TAIL_SLOTS = (
 VARIANTS["pc_tail10"] = [(19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
 VARIANTS["claw_tail10"] = CLAW_EDITS + [(19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
 
+# --- generative recall --------------------------------------------------------
+# Class-3 derivative generation is the ONLY channel that can reach a molecule that
+# is in no structure database - which is one of the two candidate explanations for
+# the ~45% recall gap (docs/V45_消融手册.md 8.6.1, case C). It is already switched
+# on in V44, but with the stock caps:
+#
+#   EngineCfg(generate=True)   ->  gen_n_analog=6, gen_max_per_parent=60, gen_max_total=150
+#
+# i.e. at most 150 proposed structures from at most 6 parent analogs. No public
+# notebook raises these. NOTE the honest risk: the ranker picks TOPN from the whole
+# candidate set, so extra generated structures can also displace pool candidates -
+# this is a bet that the generator's hits outweigh its false positives, not a free
+# option. Runtime also grows (feature computation is per candidate).
+ENGINE_CFG = (
+    "E = Engine(L, P, tfp, EngineCfg(generate=True), bank)",
+    "E = Engine(L, P, tfp, EngineCfg(generate=True, gen_n_analog=12, "
+    "gen_max_per_parent=120, gen_max_total=400), bank)  # V45: wider class-3 generation",
+)
+VARIANTS["genbig"] = [(13, ENGINE_CFG[0], ENGINE_CFG[1])]
+VARIANTS["genbig_tail10"] = [(13, ENGINE_CFG[0], ENGINE_CFG[1]),
+                             (19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
+
 
 def apply(nb: dict, variant: str) -> dict:
     edits = VARIANTS[variant]
