@@ -198,6 +198,25 @@ alarm** (it ignored `ast.Tuple` targets).
 
 ---
 
+## 2026-10-05 · Published
+
+The repository went public at
+[github.com/leesirleesirlee-star/Enveda_CASMI-2026_Molecule-ID-From-Mass-Spectra](https://github.com/leesirleesirlee-star/Enveda_CASMI-2026_Molecule-ID-From-Mass-Spectra).
+
+Preparing it meant pruning and correcting more than publishing: 142 tracked files became 68, the
+documentation was translated into English (including reordering the runbook, whose sections had been
+numbered in the order they were written rather than the order they are read), 36 hardcoded absolute
+paths were replaced with a root derived from each script's own location, the AI-agent configuration
+was kept out of the repository while the AI assistance itself was disclosed in the README, and an
+MIT licence was added — which the repository had lacked despite a compliance registry that itemises
+everyone else's licences.
+
+Three checks were added that had not existed: all relative links resolve; no leaked tokens, user
+paths or machine-specific paths appear in any tracked file; and the tracked tree runs from a
+different directory, so a reader who clones it is not relying on files only we have.
+
+---
+
 ## Refuted conclusions (kept for the record)
 
 | Original conclusion | What refuted it | Commit |
