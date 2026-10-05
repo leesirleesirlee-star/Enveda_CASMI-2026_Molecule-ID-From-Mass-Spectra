@@ -166,6 +166,25 @@ VARIANTS["pop30"] = [
     (3, POP_MU_LINE, "POP_LAM, POP_UNION, POOLPOP_MU = 0.25, 200, 0.30"),
 ]
 
+# --- gate bypass -------------------------------------------------------------
+# The whole PubChem channel (2,674 s of GPU) sits behind `lib_max < LIB_TAU(0.9)`.
+# V44's own engine comment says "V43's lib_max was 1.0 for every hidden query",
+# which would disable the channel for *every* molecule - and with it CLAW, the
+# only rank-1 lever we have. These variants test that directly: if the channel
+# was already open they change nothing, if it was shut they open it.
+FORCE_ICE_PC = (
+    "            if p and p.get('pc') and BASE[m][2] < LIB_TAU:",
+    "            if p and p.get('pc'):  # V45 force: lib_max gate disabled",
+)
+FORCE_MERGE = (
+    "    elif lib_max >= LIB_TAU:",
+    "    elif lib_max >= 9.9:  # V45 force: lib_max gate disabled (lib_max is <=1)",
+)
+FORCE_EDITS = [(17, FORCE_ICE_PC[0], FORCE_ICE_PC[1]),
+               (19, FORCE_MERGE[0], FORCE_MERGE[1])]
+VARIANTS["merge_force"] = FORCE_EDITS
+VARIANTS["claw_force"] = CLAW_EDITS + FORCE_EDITS
+
 
 def apply(nb: dict, variant: str) -> dict:
     edits = VARIANTS[variant]
