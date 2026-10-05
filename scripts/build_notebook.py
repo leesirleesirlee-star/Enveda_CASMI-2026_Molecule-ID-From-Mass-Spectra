@@ -60,7 +60,7 @@ if not os.path.isdir(COMP_DIR):
 TEST_PATH = os.path.join(COMP_DIR, "test.parquet")
 SAMPLE_SUB = os.path.join(COMP_DIR, "sample_submission.csv")
 
-# Assets we produced offline (see docs/外部资源清单.md). Kaggle mounts an attached
+# Assets we produced offline (see docs/EXTERNAL_RESOURCES.md). Kaggle mounts an attached
 # dataset under /kaggle/input/<slug>, but the exact mount name is not always the
 # slug we expect, so resolve it by searching for the structures file rather than
 # trusting a hardcoded path (a wrong path here fails the whole submission run).

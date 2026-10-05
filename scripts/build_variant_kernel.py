@@ -203,7 +203,7 @@ VARIANTS["topn120"] = [
     (3, ICE_LINE, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 120, 1.0, 3600, True"),
 ]
 
-# --- CLAW: the field's only rank-1-moving lever (see docs/V45_消融手册.md) ---
+# --- CLAW: the field's only rank-1-moving lever (see docs/PLAYBOOK.md) ---
 CLAW_EDITS = [
     (3, CLAW_CONST[0], CLAW_CONST[1]),
     (3, POP_ROOT_LINE[0], POP_ROOT_LINE[1]),
@@ -262,7 +262,7 @@ VARIANTS["bigcompute"] = [
 ]
 
 # --- recall expansion, tail-only ---------------------------------------------
-# The 819-group probe (docs/V45_消融手册.md 8.6) says ~45% of hidden molecules
+# The 819-group probe (docs/PLAYBOOK.md 8.6) says ~45% of hidden molecules
 # never get the truth into the top-25 at all: the loss is half recall, and the
 # structure pool cannot be widened (LOTUS/NPAtlas add 373 structures). PubChem is
 # the only recall channel left, and today it may occupy just slots 2,4,6,8,10.
@@ -282,7 +282,7 @@ VARIANTS["claw_tail10"] = CLAW_EDITS + [(19, TAIL_SLOTS[0], TAIL_SLOTS[1])]
 # --- generative recall --------------------------------------------------------
 # Class-3 derivative generation is the ONLY channel that can reach a molecule that
 # is in no structure database - which is one of the two candidate explanations for
-# the ~45% recall gap (docs/V45_消融手册.md 8.6.1, case C). It is already switched
+# the ~45% recall gap (docs/PLAYBOOK.md 8.6.1, case C). It is already switched
 # on in V44, but with the stock caps:
 #
 #   EngineCfg(generate=True)   ->  gen_n_analog=6, gen_max_per_parent=60, gen_max_total=150

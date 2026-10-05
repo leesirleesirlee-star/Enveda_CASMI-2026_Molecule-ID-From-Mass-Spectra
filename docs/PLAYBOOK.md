@@ -92,7 +92,7 @@ python scripts\wait_submit_report.py --kernel nicholasnicklee/casmi26-v45-ablati
 `ctl` 是逐字复制 V44 的对照。**这个对照不需要再花一次提交**：作者那份与 ctl **逐字相同**的代码
 已经拿到 0.417，且 gengsr 的 notebook 自报 0.413、我们独立复现也是 **0.413 逐位一致**——
 复现是确定性的。因此 ctl 的分数就是 **0.417**。（曾经排过 ctl 的提交任务，已撤销，理由见
-`docs/实验记录.md` 的「不单独提交 ctl」一节。）
+`docs/EXPERIMENTS.md` 的「不单独提交 ctl」一节。）
 
 ## 3. 变体清单（每个变体一个独立 kernel slug，推送零状态歧义）
 
@@ -122,7 +122,7 @@ python scripts\queue_variant.py --folder notebooks\v45\claw `
 score(claw) 和 score(icefull) 都拿到
 ├─ 任一 > 0.417
 │   ├─ 立刻推它的组合（claw → claw_pop30；icefull → combo_a/combo_b）
-│   └─ 把胜出配置冻结为当前最优，并写进 docs/榜分记录.md
+│   └─ 把胜出配置冻结为当前最优，并写进 docs/LEADERBOARD.md
 └─ 两者都 ≈ 0.417（±0.001）
     ├─ 推 unlock_engine（rank-1 杠杆，唯一还没试的头部旋钮）
     ├─ 推 topn120（候选深度；对着"隐藏集分子更大"这条已证实的分布偏移）
@@ -260,7 +260,7 @@ timeReserved     = 41885 s (11.63 h)  ← 两个运行中的会话按最大时�
    `merge stats`（含我加的 `promoted` 计数），那是判断 CLAW 有没有触发的直接证据。
    （已知反例：`xiaoyuzhoux120` 那个 kernel 的 `lastRunTime`(10-02) 早于提交(10-05)，
    所以该接口返回的是**批量运行**的日志。仍需对本次提交实测确认。）
-2. 把分数、ref、delta 写进 `docs/实验记录.md` 的台账。
+2. 把分数、ref、delta 写进 `docs/EXPERIMENTS.md` 的台账。
 3. **只有 > 基线 + 0.001 才当信号。**
 
 ### ⚠️ 效应量这么小，必须做重复实验才能相信
@@ -381,7 +381,7 @@ def run(self, spectra, target, exclude=None, exclude_sid=-1, exclude_lib=-1, dro
 
 **顺带解释了一件旧事**：团队早期的 V_A_hard（得 0.0476，被判"不可能"）是**自己动手重建库**
 来移除答案的——与引擎自带的模拟路径不是一回事。作者显然预见到了这个需求，
-而我们的早期实现绕过了它。这也说明 `V45_消融手册.md` 早期那句"V_A_hard 不可能"
+而我们的早期实现绕过了它。这也说明 `PLAYBOOK.md` 早期那句"V_A_hard 不可能"
 应当作废：**正确做法一直存在于引擎里。**
 
 ### A 的落地设计（成本已明确）
@@ -916,7 +916,7 @@ rank_train.npz: X (142,762 × 31) float32 | Y {0,1} mean=0.0115 (1,638 正例)
 
 ⇒ **从 819 个查询扩到上万，是这条线上最实在的原创空间。**这不需要新数据、不需要新架构，
 只需要把训练行的**生成**做对（留出分子的结构与其谱一起从库和池里剔除，再让引擎产出候选与特征，
-用"候选是否等于留出结构"当标签）。这正是 `docs/实验记录.md` 里 V-A_hard 那个折想做的事，
+用"候选是否等于留出结构"当标签）。这正是 `docs/EXPERIMENTS.md` 里 V-A_hard 那个折想做的事，
 只是当时用在评测而非训练上。
 
 下一步（按成本排序）：
