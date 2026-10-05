@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # A missing dataset_source costs a full ~5 h run before anyone notices, and it
 # fails at import time deep inside the pipeline. Check the metadata too.

@@ -30,7 +30,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRAIN = os.path.join(ROOT, "data", "raw", "train.parquet")
 TEST = os.path.join(ROOT, "data", "raw", "test.parquet")
 FOLDS = os.path.join(ROOT, "data", "processed", "folds.parquet")

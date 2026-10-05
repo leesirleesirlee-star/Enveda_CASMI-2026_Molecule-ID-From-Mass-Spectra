@@ -38,7 +38,10 @@ from casmi.folds_fast import build_folds_fast, exclusion_set  # noqa: E402
 from casmi.spectra import clean_peaks, load_spectra, group_by_molecule  # noqa: E402
 from casmi.validation import V_A, V_B, V_C, build_folds, evaluate       # noqa: E402
 
-DATA = r"D:\CASMI竞赛\data"
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+DATA = os.path.join(ROOT, "data")
 TRAIN = os.path.join(DATA, "raw", "train.parquet")
 TEST = os.path.join(DATA, "raw", "test.parquet")
 STRUCTS = os.path.join(DATA, "processed", "structures.parquet")
@@ -651,7 +654,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(OUT, "baseline_v1.json"))
     ap.add_argument("--test", action="store_true",
                     help="predict on data/raw/test.parquet and write a submission")
-    ap.add_argument("--submission", default=r"D:\CASMI竞赛\outputs\submission.csv")
+    ap.add_argument("--submission", default=os.path.join(ROOT, "outputs/submission.csv"))
     a = ap.parse_args()
 
     if a.test:

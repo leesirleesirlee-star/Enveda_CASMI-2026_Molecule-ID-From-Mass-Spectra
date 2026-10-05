@@ -32,7 +32,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POOL = os.path.join(ROOT, "data", "processed", "candidate_pool.parquet")
 
 

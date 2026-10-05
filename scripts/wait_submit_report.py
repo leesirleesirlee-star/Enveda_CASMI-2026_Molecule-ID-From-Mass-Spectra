@@ -28,7 +28,10 @@ import time
 import urllib.error
 import urllib.request
 
-TOK = open(r"D:\CASMI竞赛\.secrets\kaggle\access_token").read().strip()
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+TOK = open(os.path.join(ROOT, ".secrets/kaggle/access_token")).read().strip()
 COMP = "enveda-CASMI26-molecule-id-mass-spectra"
 URL_SUBMIT = ("https://api.kaggle.com/v1/competitions.CompetitionApiService/"
               "CreateCodeSubmission")

@@ -20,7 +20,7 @@ import json
 import os
 import sys
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NB = os.path.join(ROOT, "notebooks", "v45", "claw", "notebook.ipynb")
 REF = {"A", "B", "C", "D", "E", "F"}
 

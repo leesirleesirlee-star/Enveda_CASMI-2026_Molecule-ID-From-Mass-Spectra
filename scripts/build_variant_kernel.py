@@ -21,7 +21,7 @@ import json
 import os
 import sys
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "notebooks", "v44_base", "notebook.ipynb")
 COMP = "enveda-CASMI26-molecule-id-mass-spectra"
 DATASETS = [

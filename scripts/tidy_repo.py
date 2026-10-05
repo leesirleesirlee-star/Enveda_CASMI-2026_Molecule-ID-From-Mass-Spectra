@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (old path relative to repo root, new path)
 MOVES = [

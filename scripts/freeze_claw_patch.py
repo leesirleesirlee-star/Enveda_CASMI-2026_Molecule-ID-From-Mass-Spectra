@@ -7,8 +7,11 @@ probe_core2, so appending it to our CORE is enough to activate it.
 """
 import os
 
-SRC = r"D:\CASMI竞赛\.deepworks\tmp\v17\pc__probe_core2.py"
-DST = r"D:\CASMI竞赛\notebooks\v45\_claw_patch.py"
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+SRC = os.path.join(ROOT, ".deepworks/tmp/v17/pc__probe_core2.py")
+DST = os.path.join(ROOT, "notebooks/v45/_claw_patch.py")
 
 src = open(SRC, encoding="utf-8").read()
 marker = "# ---- v17 patch:"

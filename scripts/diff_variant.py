@@ -2,9 +2,13 @@
 import difflib
 import json
 import sys
+import os
 
-BASE = r"D:\CASMI竞赛\notebooks\v44_base\notebook.ipynb"
-VARIANT = sys.argv[1] if len(sys.argv) > 1 else r"D:\CASMI竞赛\notebooks\v45\claw\notebook.ipynb"
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+BASE = os.path.join(ROOT, "notebooks/v44_base/notebook.ipynb")
+VARIANT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "notebooks/v45/claw/notebook.ipynb")
 
 b = json.load(open(BASE, encoding="utf-8"))
 v = json.load(open(VARIANT, encoding="utf-8"))

@@ -24,8 +24,11 @@ import time
 import urllib.error
 import urllib.request
 
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 os.environ.setdefault("KAGGLE_API_TOKEN",
-                      open(r"D:\CASMI竞赛\.secrets\kaggle\access_token").read().strip())
+                      open(os.path.join(ROOT, ".secrets/kaggle/access_token")).read().strip())
 TOK = os.environ["KAGGLE_API_TOKEN"]
 COMP = "enveda-CASMI26-molecule-id-mass-spectra"
 
@@ -116,7 +119,7 @@ def harvest_log(owner, slug):
                        if isinstance(e, dict) and e.get("stream_name") == "stdout")
     except Exception:
         text = raw
-    path = os.path.join(r"D:\CASMI竞赛\.deepworks\tmp", f"{slug}_batch.log")
+    path = os.path.join(os.path.join(ROOT, ".deepworks/tmp"), f"{slug}_batch.log")
     open(path, "w", encoding="utf-8").write(text)
     log(f"run log saved -> {path} ({len(text)} chars stdout)")
     hits = [ln for ln in text.splitlines() if any(p in ln for p in DIAG_PATTERNS)]

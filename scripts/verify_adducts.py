@@ -22,11 +22,11 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, r"D:\CASMI竞赛\src")
+sys.path.insert(0, os.path.join(ROOT, "src"))
 from casmi.core import ADDUCT_OFFSET, formula_mass, PROTON, ELECTRON, MONO  # noqa: E402
 
-TEST = r"D:\CASMI竞赛\data\raw\test.parquet"
-SLICE = r"D:\CASMI竞赛\data\interim\validation_slices.parquet"
+TEST = os.path.join(ROOT, "data/raw/test.parquet")
+SLICE = os.path.join(ROOT, "data/interim/validation_slices.parquet")
 
 t = pd.read_parquet(TEST)
 print(f"test.parquet: {t.shape}")
@@ -43,6 +43,9 @@ print(f"all {len(vc)} test adducts are modelled")
 
 print("\n=== decisive check on labelled train slice ===")
 import os
+
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if os.path.exists(SLICE):
     s = pd.read_parquet(SLICE)
     s = s[s["molecular_formula"].notna()].copy()

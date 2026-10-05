@@ -33,7 +33,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "data", "processed", "library_spectra.parquet")
 OUT = os.path.join(ROOT, "artifacts", "lib_lean")
 KEEP = ["key", "precursor_mz", "adduct", "is_timstof", "mz", "intensity", "n_peaks"]

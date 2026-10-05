@@ -20,8 +20,12 @@ from __future__ import annotations
 import sys
 
 import numpy as np
+import os
 
-NPZ = r"D:\CASMI竞赛\.deepworks\tmp\rankerfeat\rank_train.npz"
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+NPZ = os.path.join(ROOT, ".deepworks/tmp/rankerfeat/rank_train.npz")
 K = 25
 
 

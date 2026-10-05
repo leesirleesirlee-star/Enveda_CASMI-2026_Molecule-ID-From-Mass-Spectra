@@ -258,18 +258,18 @@ Two smaller ones to confirm too:
   `.gitignore` fallback rules extended → a full-repo scan confirmed no residue.
   **Recommendation: revoke that token in Kaggle settings after the competition** (it appeared in
   plain text in conversation).
-- **The local shell was completely unusable at one point**: `D:\CASMI竞赛`'s Windows permissions
-  lacked the current user's WRITE_OWNER, so every command failed with
-  `SetNamedSecurityInfoW failed`. Fixed (backup and rollback scripts in
-  `D:\CASMI竞赛-acl-recovery\`).
+- **The local shell was completely unusable at one point**: the workspace directory's Windows
+  permissions lacked the current user's WRITE_OWNER, so every command failed with
+  `SetNamedSecurityInfoW failed`. Fixed (backup and rollback scripts in a recovery directory
+  beside the workspace).
 - **The sandbox blocks the GPU and some writes**: `torch.cuda.is_available()` is `False` in the
   restricted mode and `pip` unpacking fails. GPU commands, and writes into `.opencode/`, need
   elevated execution.
 
 ## Appendix: what this review actually did
 
-- Repaired `D:\CASMI竞赛`'s Windows file permissions (the missing right was breaking every shell
-  command); backup and rollback scripts in `D:\CASMI竞赛-acl-recovery\`
+- Repaired the workspace directory's Windows file permissions (the missing right was breaking
+  every shell command); backup and rollback scripts in a recovery directory beside the workspace
 - Read only the tail of the remote parquet over HTTP Range to obtain the full 2,539,608 × 18 schema,
   **without downloading the 2.82 GB file**
 - Used row-group column statistics to confirm `enveda-np-examples` sits in the 21st row group

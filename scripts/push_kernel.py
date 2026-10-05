@@ -14,9 +14,12 @@ import os
 import sys
 
 os.environ.setdefault("KAGGLE_API_TOKEN",
-                      open(r"D:\CASMI竞赛\.secrets\kaggle\access_token").read().strip())
+                      open(os.path.join(ROOT, ".secrets/kaggle/access_token")).read().strip())
 
 from kaggle.api.kaggle_api_extended import KaggleApi  # noqa: E402
+
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def main():

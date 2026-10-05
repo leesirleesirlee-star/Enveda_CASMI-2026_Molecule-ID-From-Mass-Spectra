@@ -18,8 +18,12 @@ from __future__ import annotations
 import argparse
 import json
 import urllib.request
+import os
 
-TOKEN_PATH = r"D:\CASMI竞赛\.secrets\kaggle\access_token"
+# repository root, derived from this file so the tree is relocatable
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+TOKEN_PATH = os.path.join(ROOT, ".secrets/kaggle/access_token")
 COMP = "enveda-CASMI26-molecule-id-mass-spectra"
 OWNER = "nicholasnicklee"
 SLUG = "casmi26-retrieval-analog"

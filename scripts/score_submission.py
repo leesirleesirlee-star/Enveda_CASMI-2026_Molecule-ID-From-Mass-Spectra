@@ -22,7 +22,7 @@ import sys
 
 import pandas as pd
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from casmi.core import mrr25_breakdown, smiles_to_inchikey14  # noqa: E402

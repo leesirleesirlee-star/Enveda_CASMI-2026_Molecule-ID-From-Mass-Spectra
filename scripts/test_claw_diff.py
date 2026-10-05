@@ -18,7 +18,7 @@ import os
 import random
 import sys
 
-ROOT = r"D:\CASMI竞赛"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REF = os.path.join(ROOT, ".deepworks", "tmp", "v17", "fusion_core.py")
 OURS = os.path.join(ROOT, "notebooks", "v45", "claw", "notebook.ipynb")
 
