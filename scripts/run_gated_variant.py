@@ -186,6 +186,19 @@ def main():
                        cwd=ROOT, capture_output=True)
     print((p.stdout or b"").decode("utf-8", "replace").strip()[-300:], flush=True)
 
+    # 3b. Wait for the NEW version to actually start before waiting for it to finish.
+    # Without this, the status still reads "complete" from the previous version for a moment,
+    # wait_complete would return immediately, and we would submit the OLD run's output --
+    # which is exactly the unpinned, ICE/GL-dead run this chain exists to replace.
+    st = status(slug)
+    end = time.time() + 900
+    while st in ("complete", "cancelled", "unknown") and time.time() < end:
+        print(f"[{time.strftime('%H:%M:%S')}] waiting for the new version to start "
+              f"(currently {st})", flush=True)
+        time.sleep(30)
+        st = status(slug)
+    print(f"[{time.strftime('%H:%M:%S')}] new version status: {st}", flush=True)
+
     # 4. wait, then submit only if the gate passed
     v = wait_complete(slug, a.timeout_h, "variant run")
     if not ok:
