@@ -4,8 +4,11 @@ Publish this repository to GitHub.
 Three environment problems were measured on this machine and are handled here rather than
 left to the user to rediscover:
 
-  1. GitHub is only reachable through the local proxy at 127.0.0.1:7897. Python picks that
-     up from the Windows registry; git does not, so git needs http.proxy set explicitly.
+  1. Reaching GitHub is a *moving* problem, so the route is measured, not assumed. For a while
+     it was reachable ONLY through the local proxy at 127.0.0.1:7897; later the proxy began
+     failing with `SSL: UNEXPECTED_EOF_WHILE_READING` while direct access worked. A hardcoded
+     route turns a working setup into an outage, which is exactly what happened. `pick_route()`
+     now probes direct first, then the proxy, and configures git to match whichever answers.
   2. Windows' own TLS backend cannot acquire a client credential in this session
      (schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS). git's bundled
      OpenSSL backend works, so http.sslBackend=openssl is required.
@@ -40,6 +43,7 @@ OWNER = "leesirleesirlee-star"
 REPO = "Enveda_CASMI-2026_Molecule-ID-From-Mass-Spectra"
 REMOTE = f"https://github.com/{OWNER}/{REPO}.git"
 PROXY = "http://127.0.0.1:7897"
+chosen_proxy = None  # set by main() from the measured route
 VALID_PREFIXES = ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_")
 
 
@@ -79,6 +83,42 @@ def read_token():
     return tok
 
 
+def reachable(opener, timeout=15):
+    """Can api.github.com be reached with this opener's proxy settings?"""
+    try:
+        req = urllib.request.Request("https://api.github.com", headers={"User-Agent": "casmi"})
+        with opener.open(req, timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def pick_route():
+    """Choose direct or proxied access, by measurement rather than assumption.
+
+    History matters here: GitHub was for a while reachable ONLY through the local proxy, so
+    the proxy was hardcoded. It later started failing with `SSL: UNEXPECTED_EOF_WHILE_READING`
+    while DIRECT access began working -- a hardcoded route then turns a working setup into an
+    outage. So probe both and take whichever answers.
+    """
+    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if reachable(direct):
+        print("route          : direct (no proxy)")
+        return direct, None
+    proxied = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+    if reachable(proxied):
+        print(f"route          : via proxy {PROXY}")
+        return proxied, PROXY
+    raise SystemExit(
+        "api.github.com is unreachable both directly and via " + PROXY +
+        ".\n  direct: connection failed\n  proxy : connection failed\n"
+        "Check network/VPN, then retry.")
+
+
+OPENER = None  # set by main()
+
+
 def api(path, token, method="GET", payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(f"https://api.github.com{path}", data=data, method=method,
@@ -89,7 +129,8 @@ def api(path, token, method="GET", payload=None):
         **({"Content-Type": "application/json"} if data else {}),
     })
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        opener = OPENER or urllib.request.build_opener()
+        with opener.open(req, timeout=30) as r:
             return r.status, dict(r.headers), json.loads(r.read() or b"null")
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read().decode("utf-8", "replace")[:300]
@@ -104,6 +145,9 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="force-with-lease: for amended commits (rewritten history)")
     a = ap.parse_args()
+
+    global OPENER, chosen_proxy
+    OPENER, chosen_proxy = pick_route()
 
     tok = read_token()
     print(f"token          : read from .secrets/github/access_token "
@@ -153,10 +197,15 @@ def main():
     else:
         git("remote", "set-url", "origin", REMOTE)
         print("remote         : origin set")
-    git("config", "http.proxy", PROXY)
-    git("config", "https.proxy", PROXY)
+    # the route was measured, not assumed; configure git to match it
+    if chosen_proxy:
+        git("config", "http.proxy", chosen_proxy)
+        git("config", "https.proxy", chosen_proxy)
+    else:
+        for key in ("http.proxy", "https.proxy"):
+            git("config", "--unset", key)  # rc!=0 when unset; harmless
     git("config", "http.sslBackend", "openssl")
-    print(f"git network    : http.proxy={PROXY}  http.sslBackend=openssl (repo-local)")
+    print(f"git network    : proxy={chosen_proxy or 'none (direct)'}  sslBackend=openssl (repo-local)")
 
     rc, out, err = git("ls-remote", "--heads", "origin")
     if rc != 0:
