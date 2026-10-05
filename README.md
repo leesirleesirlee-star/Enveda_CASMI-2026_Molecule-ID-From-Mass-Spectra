@@ -88,19 +88,29 @@ MS/MS spectra ──►   ├── dual-ranker engine (160 feats)  ├──►
 .
 ├── README.md                     ← you are here
 ├── CHANGELOG.md                  ← iteration log: what changed, why, what was refuted
+├── requirements.txt              ← local tooling deps (the Kaggle side is separate)
 ├── docs/
-│   ├── PLAYBOOK.md               ← main runbook: metric anatomy, routes, pre-registration
-│   ├── EXPERIMENTS.md            ← experiment ledger (submission refs and LB scores)
-│   ├── LEADERBOARD.md            ← all submissions + external reference points
-│   ├── EXTERNAL_RESOURCES.md     ← compliance registry: data / software / models / licences
-│   └── research_*.md             ← focused research reports
-├── scripts/                      ← variant builder, checkers, queue, reports, backtest
+│   ├── PLAYBOOK.md                    ← the runbook: metric anatomy, budget, routes, evidence
+│   ├── EXPERIMENTS.md                 ← the experiment ledger (submission refs and LB scores)
+│   ├── LEADERBOARD.md                 ← all submissions plus external reference points
+│   ├── EXTERNAL_RESOURCES.md          ← compliance registry: data / software / models / licences
+│   ├── competition_brief.md           ← the task, the metric, the rules, the timeline
+│   ├── research_metadata_errors_and_isobar_floor.md
+│   │                                  ← a standalone research report (two measurements)
+│   ├── inspiration_1.md               ← notes on two public solutions, with later corrections
+│   └── prd_patch.md                   ← the natural-product dark-space design patch
+├── scripts/                      ← builders, checkers, the queue, reports, the backtest
 ├── notebooks/
 │   ├── v44_base/                 ← the vendored baseline everything derives from
-│   └── backtest/                 ← leak-free backtest kernel + calibration configs
-├── experiments/variants/         ← generated variant notebooks (see its README index)
+│   ├── v45/                      ← _claw_patch.py + the variant currently in flight
+│   └── backtest/                 ← the leak-free backtest kernel and its calibration configs
 └── src/                          ← our own earlier pipeline (retrieval + analog propagation)
 ```
+
+**Variant notebooks are generated, not stored.** Everything under `notebooks/v45/<name>/` is built
+from `notebooks/v44_base/notebook.ipynb` by `scripts/build_variant_kernel.py --variant <name>`, so
+only the one currently running is committed. Regenerating any variant takes seconds and the
+builder asserts that every replacement hits exactly once.
 
 > `data/`, `outputs/`, `artifacts/` and `.deepworks/` are **not** in git (large files and
 > scratch). `.secrets/` is ignored too and **must never be committed**.
