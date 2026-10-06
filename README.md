@@ -25,6 +25,31 @@ was refuted). 📚 **[docs/](docs/)** — detailed write-ups.
 | Rank 1 | 0.471 |
 | Best public notebook | **0.417** (i.e. where we already are) |
 | Baseline we reproduce | `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`, submission ref `56839982` |
+| **Anchor on our own environment** | **0.417** — ref `56854098`, byte-identical V44 code through this repository's build→verify→push chain |
+
+### ✅ Reproduction confirmed on our own environment (2026-10-06)
+
+Our `ctl` — the V44 notebook, *byte-identical* (`0 cell(s) differ from the control`), pushed through
+this repository's build → verify → push chain and run on an image pinned to the reference's — scored
+**0.417**, the same as the reference to three decimals.
+
+That is what makes every later number interpretable. Without an anchor, a variant scoring 0.415 has
+two readings — "the idea does not help" or "our whole environment runs 0.002 low" — and nothing
+distinguishes them.
+
+### What the anchor also settled: ICEBERG/GLACIER are worth ≈0 here
+
+Two submissions, identical code, differing in exactly one respect:
+
+| ref | ICE / GL | score |
+|---|---|---:|
+| `56839982` | **dead** — the kernel had no image pin, so the bundled cp312 RDKit wheel was refused on Python 3.13 and both runners aborted **silently** | 0.417 |
+| `56854098` | **working** — 71 molecules scored, 365 rows reordered, GL ok on 366 | 0.417 |
+
+Forward models off vs on, same score. So on this task the two forward models contribute less than
+the metric can resolve — which also means raising their compute budget is not a route to a better
+score, and that the silent failure, while real and worth fixing, never cost us points. It did
+invalidate *diagnostics*, and finding it is what the fidelity check in `scripts/` exists for.
 
 **The headline finding:** the public design space saturates at **0.417**. We scanned all
 **250 public notebooks — none advertises ≥ 0.418**. And two implementations that differ
@@ -246,6 +271,8 @@ keeps its own licence, itemised in [docs/EXTERNAL_RESOURCES.md](docs/EXTERNAL_RE
 | Item | Status |
 |---|---|
 | V44 baseline reproduced | ✅ 0.417 (ref `56839982`) |
+| **Reproduced on our own environment** | ✅ **0.417 (ref `56854098`)** — build→verify→push chain validated |
+| ICE/GL contribution measured | ✅ **≈0** — two submissions, forward models off vs on, same score |
 | Public frontier scan (250 notebooks) | ✅ none ≥ 0.418 |
 | Recall / ranking decomposition | ✅ recall ≈ 0.545 |
 | Three routes closed by measurement | ✅ pool expansion (+0.051%), adduct expansion, hardcoded answers |
