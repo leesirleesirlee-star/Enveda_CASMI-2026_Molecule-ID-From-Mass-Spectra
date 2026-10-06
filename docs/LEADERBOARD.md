@@ -18,11 +18,13 @@
 Public score distribution: 0.471 / 0.466 / 0.441 / 0.440 / 0.435 … 0.418 (rank 59) →
 **0.417 (ranks 60–120, 61 teams tied)** → 0.413 → 0.408 → 0.397 → 0.362.
 
-## All of our submissions (23, by score)
+## All of our submissions (25, by score)
 
 | ref | Score | Notes |
 |---|---|---|
-| **56839982** | **0.417** | **Exact reproduction of V44 PairTail Locked Top1** (`xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`) — current best |
+| **56854098** | **0.417** | **V45 `ctl` on the repaired environment** — byte-identical V44 code, our build/push chain, docker image pinned to the reference's. Reproduces the reference exactly ⇒ the pipeline and the grading path are validated, so variant deltas are now interpretable |
+| **56839982** | **0.417** | **Exact reproduction of V44 PairTail Locked Top1** (`xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`) |
+| 56868105 | 0.400 | teammate submission, "four-direction experiment" (2026-10-06) |
 | 56835199 | 0.413 | gengsr V3 reproduction (`giaok246`) — matches its author's reported 0.413 **digit for digit** ⇒ reproduction here is deterministic |
 | 56818216 | 0.132 | NP candidate pool 730k + formula mass |
 | 56815919 | 0.176 | V1 B0 inference (the account's pre-existing generative line) |
@@ -31,6 +33,28 @@ Public score distribution: 0.471 / 0.466 / 0.441 / 0.440 / 0.435 … 0.418 (rank
 | 56787177 … 56667967 | 0.169–0.176 | The account's pre-existing generative pipeline (10 submissions) |
 | 56606429, 56535378 | 0.162, 0.176 | Early retrieval / COCONUT analog |
 | 56534532, 56533793 | 0.141, 0.140 | Earliest mass-filtered retrieval baselines |
+
+### 🔑 The two 0.417 submissions differ in exactly one thing: whether ICE/GL ran
+
+| ref | ICE / GL | score |
+|---|---|---:|
+| 56839982 | **dead** — the pushed kernel had no image pin, so the bundled cp312 RDKit wheel was refused on Python 3.13 and both runners aborted | **0.417** |
+| 56854098 | **working** — 71 molecules scored, 365 rows reordered, GL ok on 366 | **0.417** |
+
+Same code, forward models off vs on, identical score to three decimals. Three consequences:
+
+1. **The ICE/GL channel is worth ≈0 on the hidden test.** Whatever those models add is below the
+   resolution of the metric here.
+2. **`icefull` is pointless.** Raising `ICE_BUDGET` spends GPU on a channel that does not move the
+   score — the ablation's pre-registered "ICE genuinely contributes nothing" branch, now settled by
+   two real submissions rather than by argument.
+3. **The environment defect never cost us score.** It was real, silent, and worth fixing — it
+   invalidated *diagnostics* and would have made ICE-based experiments uninterpretable — but the
+   0.417 we held was not handicapped by it. That corrects the stronger claim I made when I found it.
+
+This also focuses the search: the levers that can matter are the ones that change **which
+structures are in the 25 candidates and in what order** (recall and ranking), not the ones that
+re-score candidates the retrieval step already found.
 
 ## External reference points (2026-10-05)
 
