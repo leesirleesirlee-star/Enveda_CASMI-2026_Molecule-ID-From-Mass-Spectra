@@ -258,6 +258,18 @@ def main():
     print(f"\npushing        : {a.branch} -> origin")
     push_args = ["push"] + (["--force-with-lease"] if a.force else []) + ["origin", f"{a.branch}:{a.branch}"]
     rc, out, err = git(*push_args, env=env)
+    if rc != 0 and not a.force:
+        # The network here is intermittent: a route probe can succeed and the very next request
+        # fail (observed -- the probe chose direct, the push then failed with "Could not connect").
+        # One probe is not enough, so on failure flip to the other route and try once more.
+        other = None if chosen_proxy else PROXY
+        print(f"   push failed; retrying via {'direct' if other is None else other}")
+        for key, val in (("http.proxy", other), ("https.proxy", other)):
+            if val:
+                git("config", key, val)
+            else:
+                git("config", "--unset", key)
+        rc, out, err = git(*push_args, env=env)
     for line in (err or out).splitlines():
         if line.strip():
             # defensively make sure a token can never be echoed back
