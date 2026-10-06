@@ -4,10 +4,12 @@ Kaggle *CASMI 2026 (Enveda)*: given a molecule's tandem mass spectra (1–16 spe
 molecule, timsTOF), rank 25 candidate structures. The metric is **MRR@25** over
 tautomer-canonical InChIKey14 (first block).
 
-This repository reproduces the strongest public pipeline
-(`xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`) at **0.417**, documents *why the public
-design space is saturated at exactly that score*, and builds the measurement
-infrastructure needed to go beyond it.
+This repository reproduces the strongest public pipeline — **`imranarif536/casmi26-v44-pairtail-locked-top1`**
+([source](https://www.kaggle.com/code/imranarif536/casmi26-v44-pairtail-locked-top1)) — at **0.417**,
+documents *why the public design space is saturated at exactly that score*, and builds the measurement
+infrastructure needed to go beyond it. Attribution for this and every other public notebook we build
+on is in **[Lineage and attribution](#lineage-and-attribution)** below and in
+[docs/EXTERNAL_RESOURCES.md](docs/EXTERNAL_RESOURCES.md) §E.
 
 📓 **[CHANGELOG.md](CHANGELOG.md)** — the full iteration log (what changed, why, and what
 was refuted). 📚 **[docs/](docs/)** — detailed write-ups.
@@ -239,6 +241,36 @@ Hence two tiers:
 
 Calibration configs (`bt`, `bt_top1`, `bt_no_ice`) and their **falsification conditions** are
 pre-registered in the runbook.
+
+---
+
+## Lineage and attribution
+
+**We did not write the V44 pipeline, and we do not claim it.** It is
+**`imranarif536/casmi26-v44-pairtail-locked-top1`**
+([Kaggle source](https://www.kaggle.com/code/imranarif536/casmi26-v44-pairtail-locked-top1)) —
+*"don't let a new ranker destroy a proven top-1; use LambdaRank to improve the tail."*
+
+One naming confusion is worth clearing up, because it is credit that would otherwise be misassigned.
+The kernel we pulled the code from sits at `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`, which is
+**one of our own team accounts** and carries the same slug — that is what a Kaggle *fork* looks like.
+So:
+
+| | Who | What it is |
+|---|---|---|
+| **V44** | `imranarif536` | the original notebook; **author of the pipeline** |
+| V44 fork | `xiaoyuzhoux120` (our team) | the copy we pulled from; submission `56839982` is **our score of their code** |
+| **V45** | this repository | our build → verify → push chain, image pinned; `V45 ctl` reproduced 0.417 on our own environment |
+
+**What is ours in V45:** the pinned-image environment repair, the fidelity check that found
+ICEBERG/GLACIER silently failing, the CLAW gate ported verbatim from v17, the `lib_max` gate
+analysis, the `pc_adaptive` slot policy, and the verification tooling in `scripts/`.
+
+**Everything else we build on** — 12 further public notebooks, 7 external models, 7 libraries, each
+with its licence and purpose — is itemised in
+[docs/EXTERNAL_RESOURCES.md](docs/EXTERNAL_RESOURCES.md), which exists so that a winning solution can
+disclose its provenance as the competition rules require. If you are one of those authors and want a
+correction or a removal, open an issue and we will act on it.
 
 ---
 

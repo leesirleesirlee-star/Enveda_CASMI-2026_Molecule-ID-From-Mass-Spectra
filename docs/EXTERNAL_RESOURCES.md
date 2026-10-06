@@ -104,7 +104,20 @@ Every part of the current main line originates from public notebooks. Authors (f
 | `matterhorn3838` | GLACIER `[M+H]+` filtering (+0.004) |
 | `lehau007` | V26/V27/V28 ensemble releases (V27 = the public best 0.417) |
 | `nazarmohammed` | Curated three-engine fusion + forward cascade (the direct base of our V44) |
+| **`imranarif536`** | **Author of `casmi26-v44-pairtail-locked-top1` — the notebook whose *code* our V45 line reproduces.** Source: https://www.kaggle.com/code/imranarif536/casmi26-v44-pairtail-locked-top1 |
 | `nursrijan`, `ozertuu`, `analyticaobscura` | Variants and ablation records |
+
+**On the V44/V45 naming, because it matters for attribution.** The notebook we reproduce is
+`imranarif536`'s; the kernel we pulled it from (`xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`) sits
+on one of our own team accounts and carries the same slug, which is what a Kaggle fork looks like. So
+credit for the V44 pipeline belongs to `imranarif536`, and submission `56839982` is *our score of
+their code*, not our design.
+
+The distinction we do claim: the **V45** kernels in `notebooks/v45/` are built, verified and pushed by
+this repository, with the docker image pinned to the reference's, and `V45 ctl` is the run that
+reproduced 0.417 on our own environment. Our substantive additions to the pipeline are the CLAW gate
+ported verbatim from v17, the `lib_max` gate analysis, the `pc_adaptive` slot policy, and the
+fidelity/verification tooling under `scripts/`.
 
 **Our own changes** (relative to that direct base): porting the CLAW gate and `promote()`
 (copied verbatim from v17 rather than re-implemented), the `lib_max` gate analysis, and all
