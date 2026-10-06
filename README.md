@@ -25,13 +25,23 @@ was refuted). 📚 **[docs/](docs/)** — detailed write-ups.
 | Rank 1 | 0.471 |
 | Best public notebook | **0.417** (i.e. where we already are) |
 | Baseline we reproduce | `xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`, submission ref `56839982` |
-| **Anchor on our own environment** | **0.417** — ref `56854098`, byte-identical V44 code through this repository's build→verify→push chain |
+| **Anchor on our own environment** | **V45 `ctl`** — **0.417**, ref `56854098`, through this repository's build→verify→push chain |
 
 ### ✅ Reproduction confirmed on our own environment (2026-10-06)
 
-Our `ctl` — the V44 notebook, *byte-identical* (`0 cell(s) differ from the control`), pushed through
-this repository's build → verify → push chain and run on an image pinned to the reference's — scored
+**V45 `ctl`** — kernel `nicholasnicklee/casmi26-v45-ctl`, submission ref **`56854098`** — scored
 **0.417**, the same as the reference to three decimals.
+
+Its *code* is byte-identical to the V44 baseline (`self-check: 0 cell(s) differ from the control`);
+what "V45" names is the run we built, pushed and scored ourselves, which is what makes it an anchor
+rather than a re-report of someone else's number. Two runs, one score:
+
+| | V44 baseline (ref `56839982`) | **V45 `ctl`** (ref `56854098`) |
+|---|---|---|
+| code | V44 `notebook.ipynb` | V44 `notebook.ipynb`, 0 cells differ |
+| built and pushed by | author's public kernel | **this repository's chain** |
+| docker image | default for that run | **pinned to the reference's** |
+| score | 0.417 | **0.417** |
 
 That is what makes every later number interpretable. Without an anchor, a variant scoring 0.415 has
 two readings — "the idea does not help" or "our whole environment runs 0.002 low" — and nothing
@@ -271,7 +281,7 @@ keeps its own licence, itemised in [docs/EXTERNAL_RESOURCES.md](docs/EXTERNAL_RE
 | Item | Status |
 |---|---|
 | V44 baseline reproduced | ✅ 0.417 (ref `56839982`) |
-| **Reproduced on our own environment** | ✅ **0.417 (ref `56854098`)** — build→verify→push chain validated |
+| **Reproduced on our own environment** | ✅ **V45 `ctl`, 0.417 (ref `56854098`)** — build→verify→push chain validated |
 | ICE/GL contribution measured | ✅ **≈0** — two submissions, forward models off vs on, same score |
 | Public frontier scan (250 notebooks) | ✅ none ≥ 0.418 |
 | Recall / ranking decomposition | ✅ recall ≈ 0.545 |
