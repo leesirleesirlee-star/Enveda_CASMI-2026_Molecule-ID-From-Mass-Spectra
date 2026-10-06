@@ -18,13 +18,16 @@
 Public score distribution: 0.471 / 0.466 / 0.441 / 0.440 / 0.435 … 0.418 (rank 59) →
 **0.417 (ranks 60–120, 61 teams tied)** → 0.413 → 0.408 → 0.397 → 0.362.
 
-## All of our submissions (25, by score)
+## All of our submissions (28, by score)
 
 | ref | Score | Notes |
 |---|---|---|
-| **56854098** | **0.417** | **V45 `ctl` on the repaired environment** — byte-identical V44 code, our build/push chain, docker image pinned to the reference's. Reproduces the reference exactly ⇒ the pipeline and the grading path are validated, so variant deltas are now interpretable |
-| **56839982** | **0.417** | **Exact reproduction of V44 PairTail Locked Top1** (`xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`) |
-| 56868105 | 0.400 | teammate submission, "four-direction experiment" (2026-10-06) |
+| **56877838** | **0.418** | 🏆 **`pc_adaptive`** — PubChem share widened 5→14 slots where its own evidence beats the pool's. **Our best, and above every one of the 250 public notebooks we scanned (all ≤ 0.417).** +0.001 over the anchor, i.e. at the edge of this metric's resolution: promising, not proven |
+| **56854098** | **0.417** | **V45 `ctl` on the repaired environment** — byte-identical V44 code, our build/push chain, docker image pinned to the reference's. Reproduces the reference exactly ⇒ the pipeline and the grading path are validated, so variant deltas are interpretable |
+| **56839982** | **0.417** | **Exact reproduction of V44 PairTail Locked Top1** (`xiaoyuzhoux120/casmi26-v44-pairtail-locked-top1`, a team-account fork of `imranarif536`'s notebook) |
+| 56878093 | 0.416 | `claw` v2 — promote a confident PubChem-only proposal to rank 1. −0.001 = within noise, no measurable gain ⇒ **retired** |
+| 56874475 | 0.402 | teammate submission, "second-ranked development arm" (2026-10-06) |
+| 56868105 | 0.400 | teammate submission, "four-direction experiments" (2026-10-06) |
 | 56835199 | 0.413 | gengsr V3 reproduction (`giaok246`) — matches its author's reported 0.413 **digit for digit** ⇒ reproduction here is deterministic |
 | 56818216 | 0.132 | NP candidate pool 730k + formula mass |
 | 56815919 | 0.176 | V1 B0 inference (the account's pre-existing generative line) |
@@ -34,7 +37,30 @@ Public score distribution: 0.471 / 0.466 / 0.441 / 0.440 / 0.435 … 0.418 (rank
 | 56606429, 56535378 | 0.162, 0.176 | Early retrieval / COCONUT analog |
 | 56534532, 56533793 | 0.141, 0.140 | Earliest mass-filtered retrieval baselines |
 
-### 🔑 The two 0.417 submissions differ in exactly one thing: whether ICE/GL ran
+## The external bar moved (2026-10-06)
+
+| Approach | Score |
+|---|---:|
+| `huseyinemreaksoy/casmi26-v4n-fusion-pubchem-on-public-0-421` | **0.421** |
+| **ours — `pc_adaptive`** | **0.418** |
+| ours (anchor) and the best of 250 public notebooks | 0.417 |
+
+Everyone improved at once, so a personal best is not a rank: our 0.418 sits **below** the new 0.421
+leader while being **above** the entire 0.417 cluster we had been tied in.
+
+### 🔑 Why that notebook beats us — and where our own analysis was wrong
+
+Its config differs from ours on essentially **one number: `ICE_BUDGET = 5400` against our `300`.**
+Ordering molecules so the library-less ones are scored first, `ICE_UNION`, and feeding PubChem
+candidates into ICE — our V44 already does all three.
+
+We had concluded "ICE/GL are worth ≈0" from two submissions differing only in whether they ran. But at
+budget 300 the log reports `ICE meta {"status":"budget","n_mols_scored": 71,"n_mols_covered": 371}` —
+**18% coverage, then out of time.** That comparison measured *"ICE at 18% coverage"*, not *"ICE"*, and
+`icefull` was retired on the strength of it. Both `icefull` (budget alone) and `icefull_pc` (budget +
+our slot widening) now test it.
+
+### The two 0.417 submissions differ in exactly one thing: whether ICE/GL ran
 
 | ref | ICE / GL | score |
 |---|---|---:|

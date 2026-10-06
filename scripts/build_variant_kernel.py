@@ -180,7 +180,24 @@ print('V45: champion top-1 lock disabled')
 VARIANTS: dict[str, list[tuple[int, str, str]]] = {
     "ctl": [],
     "nolock": [],
-    "icefull": [(3, ICE_LINE, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 3000, True")],
+    # ICE_BUDGET 300 -> 5400, matching the budget used by
+    # huseyinemreaksoy/casmi26-v4n-fusion-pubchem-on-public-0-421 (LB 0.421).
+    #
+    # This CORRECTS an earlier conclusion of ours. We recorded "ICE/GL are worth ~0" from two
+    # submissions differing only in whether they ran -- but at budget 300 the log reports
+    #   ICE meta {"status":"budget", "n_mols_scored": 71, "n_mols_covered": 371}
+    # i.e. it scored 18% of the molecules and ran out of time. That measures "ICE at 18% coverage",
+    # not "ICE". The budget was never actually tested; this variant is the test.
+    "icefull": [(3, ICE_LINE, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 5400, True")],
+    # The synthesis: their forward-model budget plus our PC-adaptive slot widening, which measured
+    # +0.001 (0.417 -> 0.418) on its own. Run alongside `icefull` so that if this wins, the share of
+    # the gain attributable to each half stays separable.
+    "icefull_pc": [
+        (3, ICE_LINE, "TOPN, ICE_LAM, ICE_BUDGET, ICE_PC = 60, 1.0, 5400, True"),
+        (3, SLOTS_LINE,
+         "SLOTS_AGG, SLOTS_GENTLE = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20], "
+         "[4, 8, 12, 16, 20]"),
+    ],
     "unlock_engine": [
         (7, ENGINE_PAIR_W, "pair_weight = 0.35"),
         (7, ENGINE_TOP1_SHIELD, "pass  # V45: engine top-1 shield removed"),

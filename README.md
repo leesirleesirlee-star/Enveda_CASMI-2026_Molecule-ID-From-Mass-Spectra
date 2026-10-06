@@ -22,7 +22,7 @@ was refuted). 📚 **[docs/](docs/)** — detailed write-ups.
 |---|---|
 | Task | CASMI 2026 (Enveda) — spectra → structure, 25 candidates per molecule |
 | Metric | **MRR@25** (tautomer-canonical InChIKey14 first block) |
-| **Our best** | **0.417** — public LB rank 111 of ≥800 teams |
+| **Our best** | **0.418** (`pc_adaptive`, ref `56877838`) — above the 250-notebook public cluster, which tops out at 0.417 |
 | Rank 59 (the real bar) | 0.418 |
 | Rank 1 | 0.471 |
 | Best public notebook | **0.417** (i.e. where we already are) |
@@ -49,7 +49,7 @@ That is what makes every later number interpretable. Without an anchor, a varian
 two readings — "the idea does not help" or "our whole environment runs 0.002 low" — and nothing
 distinguishes them.
 
-### What the anchor also settled: ICEBERG/GLACIER are worth ≈0 here
+### ⚠️ Correction: we first read the anchor as "ICEBERG/GLACIER are worth ≈0". That was wrong.
 
 Two submissions, identical code, differing in exactly one respect:
 
@@ -58,16 +58,47 @@ Two submissions, identical code, differing in exactly one respect:
 | `56839982` | **dead** — the kernel had no image pin, so the bundled cp312 RDKit wheel was refused on Python 3.13 and both runners aborted **silently** | 0.417 |
 | `56854098` | **working** — 71 molecules scored, 365 rows reordered, GL ok on 366 | 0.417 |
 
-Forward models off vs on, same score. So on this task the two forward models contribute less than
-the metric can resolve — which also means raising their compute budget is not a route to a better
-score, and that the silent failure, while real and worth fixing, never cost us points. It did
-invalidate *diagnostics*, and finding it is what the fidelity check in `scripts/` exists for.
+We first concluded "forward models off vs on, same score ⇒ they are worth ≈0, so raising their budget
+is not a route to a better score." **That inference was invalid, and the log said so all along:**
 
-**The headline finding:** the public design space saturates at **0.417**. We scanned all
-**250 public notebooks — none advertises ≥ 0.418**. And two implementations that differ
-substantially (one with CLAW promotion + a popularity patch + an ICE budget of 5400, one
-with none of those and an ICE budget of 300) **land on the same score**. Crossing that
-line therefore requires something the public implementations do not do.
+```
+ICE meta {"status": "budget", "n_mols_scored": 71, "n_mols_covered": 371, ...}
+```
+
+`status: "budget"` means ICE **ran out of time after scoring 71 of 400 molecules — 18%**. So the
+comparison measured *"ICE at 18% coverage"*, not *"ICE"*. The budget was never actually tested, and
+we had quietly retired the experiment that would have tested it.
+
+The correction came from `huseyinemreaksoy/casmi26-v4n-fusion-pubchem-on-public-0-421` (**0.421**),
+whose config differs from ours on essentially this one number: `ICE_BUDGET = 5400` against our `300`.
+Everything else — ordering molecules so library-less ones are scored first, `ICE_UNION`, feeding
+PubChem candidates into ICE — our V44 already does. Two variants now test it: `icefull` (the budget
+alone) and `icefull_pc` (budget + our PubChem slot widening), so the gain stays attributable.
+
+**The lesson, which is the third instance of the same one here: test the effect, not the label.**
+`status == "ok"` had already blocked a healthy run once; "the models ran" is a label, "they scored 18%
+of the molecules" is the effect.
+
+**The headline finding:** the public design space saturates at **0.417**. We scanned all **250 public
+notebooks and none advertises ≥ 0.418** — and two implementations differing substantially (CLAW
+promotion + a popularity patch + an ICE budget of 5400, versus none of those and a budget of 300)
+landed on the same score. Crossing that line requires something the public implementations do not do.
+
+**Update (2026-10-06):** `pc_adaptive` scored **0.418** — the first result here above that line, and
+above the whole public cluster. Two further variants (`icefull`, `icefull_pc`) are testing whether the
+forward-model budget compounds with it.
+
+| ref | submission | score |
+|---|---|---:|
+| `56877838` | **`pc_adaptive`** — PubChem share widened 5→14 slots where its evidence wins | **0.418** |
+| `56878093` | `claw` v2 — promote a confident PubChem-only proposal to rank 1 | 0.416 |
+| `56854098` | `ctl` — the anchor | 0.417 |
+
+`pc_adaptive` is +0.001 over the anchor, which is at the edge of this metric's resolution, so it is
+promising rather than proven; `claw` is −0.001, i.e. no measurable gain, and we retired it rather
+than keep a lever that does not move. Both were expected to look inert on the public batch — they
+act only on molecules with weak library evidence — which is why scores, not batch logs, are the
+instrument.
 
 ---
 
@@ -314,7 +345,7 @@ keeps its own licence, itemised in [docs/EXTERNAL_RESOURCES.md](docs/EXTERNAL_RE
 |---|---|
 | V44 baseline reproduced | ✅ 0.417 (ref `56839982`) |
 | **Reproduced on our own environment** | ✅ **V45 `ctl`, 0.417 (ref `56854098`)** — build→verify→push chain validated |
-| ICE/GL contribution measured | ✅ **≈0** — two submissions, forward models off vs on, same score |
+| ICE/GL contribution | ⚠️ **retested** — the "≈0" reading came from a run where ICE scored 18% of molecules; `icefull` now tests a real budget |
 | Public frontier scan (250 notebooks) | ✅ none ≥ 0.418 |
 | Recall / ranking decomposition | ✅ recall ≈ 0.545 |
 | Three routes closed by measurement | ✅ pool expansion (+0.051%), adduct expansion, hardcoded answers |

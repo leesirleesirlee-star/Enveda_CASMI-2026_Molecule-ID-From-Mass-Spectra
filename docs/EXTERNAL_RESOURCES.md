@@ -105,6 +105,7 @@ Every part of the current main line originates from public notebooks. Authors (f
 | `lehau007` | V26/V27/V28 ensemble releases (V27 = the public best 0.417) |
 | `nazarmohammed` | Curated three-engine fusion + forward cascade (the direct base of our V44) |
 | **`imranarif536`** | **Author of `casmi26-v44-pairtail-locked-top1` — the notebook whose *code* our V45 line reproduces.** Source: https://www.kaggle.com/code/imranarif536/casmi26-v44-pairtail-locked-top1 |
+| **`huseyinemreaksoy`** | **`casmi26-v4n-fusion-pubchem-on-public-0-421` (LB 0.421)** — the source of our `ICE_BUDGET = 5400` correction. Their config differs from ours on essentially that one number (`5400` vs `300`); the mechanism we had wrongly retired as worthless was in fact running at 18% coverage. https://www.kaggle.com/code/huseyinemreaksoy/casmi26-v4n-fusion-pubchem-on-public-0-421 |
 | `nursrijan`, `ozertuu`, `analyticaobscura` | Variants and ablation records |
 
 **On the V44/V45 naming, because it matters for attribution.** The notebook we reproduce is

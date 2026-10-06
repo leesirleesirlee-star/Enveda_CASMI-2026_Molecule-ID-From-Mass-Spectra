@@ -1303,6 +1303,57 @@ loop, because its false-negative rate is paid in idle hours, not in error messag
 | `claw` v2 | `casmi26-v45-claw` | rank-1: promotes a PubChem-only structure when its evidence beats the library's | running |
 | `pc_adaptive` | `casmi26-v45-pc-adaptive` | **recall@25**: widens the PubChem share only where PubChem's evidence wins | running |
 
+---
+
+# 2026-10-06 (second segment) · 0.418, 0.416, and a correction to our own ICE conclusion
+
+## Results
+
+| ref | variant | score | vs anchor |
+|---|---|---:|---:|
+| 56877838 | **`pc_adaptive`** — PubChem slots 5→14 where its evidence wins | **0.418** | **+0.001** |
+| 56854098 | `ctl` (anchor) | 0.417 | — |
+| 56878093 | `claw` v2 — promote a confident PubChem proposal to rank 1 | 0.416 | −0.001 |
+
+**`pc_adaptive` is our first result above 0.417**, and the 250 public notebooks we scanned top out at
+0.417, so it is above that entire cluster. It is **+0.001, at the edge of this metric's resolution** —
+promising, not proven. `claw` is −0.001, indistinguishable from the anchor: **no measurable gain, so
+we retired that lever** rather than keep one that does not move.
+
+Both variants were **expected to be inert on the public batch** and were: the logs show
+`merge stats {'untouched': 400, ...}` for both — the PubChem branch never fires on visible-test
+molecules, because those are all train molecules with strong library evidence. The batch run cannot
+distinguish these variants at all; **the score is the only instrument**, which is exactly what the
+anchor was for.
+
+## ⚠️ The correction: "ICE/GL are worth ≈0" was an invalid inference
+
+The 0.421 notebook `huseyinemreaksoy/casmi26-v4n-fusion-pubchem-on-public-0-421` was published, and
+pulling its source and diffing it against ours shows **the mechanisms are the same**: molecules sorted
+so library-less ones are scored first, `ICE_UNION`, and PubChem candidates fed into ICE — V44 already
+does all three. It differs on essentially **one number: `ICE_BUDGET = 5400` against our `300`**.
+
+That made us re-read our own log, which had said it all along:
+
+```
+ICE meta {"status": "budget", "n_mols": 400, "n_mols_scored": 71, "n_mols_covered": 371, ...}
+```
+
+`status: "budget"` means ICE **used up its 300 s after scoring 71 of 400 molecules — 18% coverage.**
+So the two 0.417 submissions that differed in whether ICE/GL ran measured *"ICE at 18% coverage"*, not
+*"ICE"*. **The conclusion we published — in the README, the leaderboard and the changelog — was
+therefore wrong**, and on the strength of it we had retired `icefull`, the one experiment that would
+have tested the real question.
+
+Two variants now run: **`icefull`** (budget 300 → 5400 alone, isolating the published lever) and
+**`icefull_pc`** (budget + our slot widening, the synthesis). Running both keeps the gain
+attributable — if only the combination wins, we will know it was our half that did the work.
+
+**The lesson, and it is the third instance of the same one in this project: test the effect, not the
+label.** `status == "ok"` once blocked a healthy run; "the forward models ran" is a label, while
+"they scored 18% of the molecules" is the effect. In both cases the label was right and the meaning
+was wrong.
+
 Both carry the pinned image. Recall is the larger half of the loss (45% of molecules never reach the
 top 25), which is why `pc_adaptive` is worth a slot even though the public frontier is flat at 0.417:
 the PubChem branch is inert on the visible batch (`merge stats {'untouched': 400}`) and fires only on
