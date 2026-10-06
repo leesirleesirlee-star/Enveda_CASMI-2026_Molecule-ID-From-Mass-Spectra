@@ -1249,3 +1249,61 @@ What the goal statement asks for is satisfied where it applies — see the V_A_h
 2026-10-03 section (MRR@25 0.0476 on the only non-inflated local fold) — and for the V44 lineage the
 substitute evidence is the fidelity check plus the Kaggle score itself, which the ledger records
 above and below.
+
+---
+
+# 2026-10-06 · ✅ Reproduction confirmed: our environment scores exactly what the reference does
+
+## The result
+
+| ref | submission | public score |
+|---|---|---:|
+| 56839982 | V44 PairTail Locked Top1 — the reference, author's own run | **0.417** |
+| **56854098** | **V45 `ctl`** — byte-identical code, our push chain, pinned image | **0.417** |
+
+**Same code, our environment, same score to three decimals.** The environment repair, the notebook
+build-and-push chain, and the grading path are all validated end to end. This is the first time in
+the project that a number produced by *our* pipeline can be compared against a known one.
+
+**What it buys:** every variant delta is now interpretable. Before this, a `claw` score of, say,
+0.415 had two readings — "CLAW does not help" or "our whole environment is 0.002 low" — and those
+cannot be told apart without an anchor. That ambiguity is now closed.
+
+**What it proves about the defect:** the author's 0.417 was obtained *with working ICE/GL* (their
+metadata pins the image). Our unpinned runs silently lacked the forward models, so any variant tested
+before the repair was handicapped relative to the baseline it was being compared against — an error
+in the direction that manufactures false negatives.
+
+## The cost of the mis-specified gate
+
+My acceptance test demanded `ICE meta status == "ok"`, but a healthy budget-limited ICE reports
+`"budget"` — so the gated chain declared FAIL at 22:03 and stopped. `claw` v2 was never pushed and
+**no GPU work ran for ~17.5 hours** (22:07 → 15:40 the next day) while 22.4 h of quota sat unused.
+
+The bug was fixed within the hour, and the criterion now tests the effect (`reranked > 0`) rather
+than the label, with six self-check cases including the real logs from both runs. What was *not*
+fixed in time is the consequence: **automation that halts on a wrong verdict does not resume itself.**
+An unattended gate that can stop the whole queue needs either a second opinion or a human in the
+loop, because its false-negative rate is paid in idle hours, not in error messages.
+
+## Submissions visible in the ledger
+
+| ref | score | note |
+|---|---:|---|
+| 56868105 | 0.400 | teammate submission, 2026-10-06T02:38 |
+| **56854098** | **0.417** | our environment anchor (this section) |
+| 56839982 | 0.417 | the reference |
+| 56835199 | 0.413 | Gengsr V3 reproduction |
+| … | 0.096–0.176 | the project's own early pipeline, before the V44 lineage |
+
+## Now running
+
+| variant | kernel | attacks | status |
+|---|---|---|---|
+| `claw` v2 | `casmi26-v45-claw` | rank-1: promotes a PubChem-only structure when its evidence beats the library's | running |
+| `pc_adaptive` | `casmi26-v45-pc-adaptive` | **recall@25**: widens the PubChem share only where PubChem's evidence wins | running |
+
+Both carry the pinned image. Recall is the larger half of the loss (45% of molecules never reach the
+top 25), which is why `pc_adaptive` is worth a slot even though the public frontier is flat at 0.417:
+the PubChem branch is inert on the visible batch (`merge stats {'untouched': 400}`) and fires only on
+the hidden molecules, so its effect can appear in the score with no public-batch signal at all.
